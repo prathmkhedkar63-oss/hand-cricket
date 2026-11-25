@@ -194,32 +194,3 @@ async def test_cricket_fun_admin_only_and_group_tracking():
     await cmd_toggle_fun(admin_msg)
     assert "3h Cricket Fact & Dark Joke Auto-Post" in admin_msg.answer.call_args[0][0]
     assert CricketFunService.AUTO_INTERVAL_SECONDS == 3 * 3600
-
-
-@pytest.mark.asyncio
-async def test_admin_delete_bot_message():
-    from unittest.mock import AsyncMock, MagicMock
-    from bot.handlers.admin_handlers import cmd_delete_bot_message
-    from config.settings import settings
-
-    mock_bot = AsyncMock()
-    mock_bot.id = 8345716216
-
-    # Non-admin blocked
-    user_msg = MagicMock()
-    user_msg.from_user = MagicMock(id=555111, username="regular_player")
-    user_msg.answer = AsyncMock()
-    await cmd_delete_bot_message(user_msg, mock_bot)
-    assert "Access denied" in user_msg.answer.call_args[0][0]
-
-    # Admin deletes bot's replied message
-    del_msg = MagicMock()
-    del_msg.from_user = MagicMock(id=999001, username=settings.SUPER_ADMIN_USERNAME.lstrip("@"))
-    del_msg.chat = MagicMock(id=-100999111)
-    del_msg.reply_to_message = MagicMock(message_id=4242, from_user=MagicMock(id=8345716216))
-    del_msg.delete = AsyncMock()
-    del_msg.answer = AsyncMock()
-
-    await cmd_delete_bot_message(del_msg, mock_bot)
-    mock_bot.delete_message.assert_awaited_once_with(chat_id=-100999111, message_id=4242)
-    del_msg.delete.assert_awaited_once()

@@ -245,33 +245,6 @@ async def cmd_toggle_fun(message: Message):
     status = "ON (every 3h)" if new_val else "OFF"
     await message.answer(f"🏏 <b>3h Cricket Fact & Dark Joke Auto-Post:</b> <code>{status}</code>", parse_mode="HTML")
 
-
-@router.message(Command("delete"))
-async def cmd_delete_bot_message(message: Message, bot: Bot):
-    if not await is_admin(message.from_user.id, message.from_user.username):
-        await message.answer("🚫 Access denied. Only Bot Admins can delete bot messages.")
-        return
-
-    reply_msg = message.reply_to_message
-    if not reply_msg:
-        await message.answer("ℹ️ Reply to any bot message with <code>/delete</code> to remove it.", parse_mode="HTML")
-        return
-
-    if reply_msg.from_user and reply_msg.from_user.id != bot.id:
-        await message.answer("⚠️ You can only delete messages sent by the bot.")
-        return
-
-    try:
-        await bot.delete_message(chat_id=message.chat.id, message_id=reply_msg.message_id)
-    except Exception as e:
-        await message.answer(f"⚠️ Could not delete message: {e}")
-        return
-
-    try:
-        await message.delete()
-    except Exception:
-        pass
-
 @router.message(Command("start_bot"))
 async def cmd_start_bot(message: Message):
     if not is_super_admin(message.from_user.id, message.from_user.username):
