@@ -47,6 +47,9 @@ async def setup_bot_commands(bot: Bot):
         BotCommand(command="administrator", description="Admin: Grant bot admin rights"),
         BotCommand(command="revoke_admin", description="Admin: Revoke bot admin rights"),
         BotCommand(command="messege_push", description="Admin: Broadcast message to DMs & groups"),
+        BotCommand(command="push_fact", description="Admin: Post cricket fact & dark joke to groups"),
+        BotCommand(command="toggle_fun", description="Admin: Toggle 3h fact/joke auto-post"),
+        BotCommand(command="delete", description="Admin: Reply to delete a bot message"),
     ]
 
     # Group chat commands
@@ -81,6 +84,9 @@ async def setup_bot_commands(bot: Bot):
         BotCommand(command="administrator", description="Admin: Make user bot admin"),
         BotCommand(command="revoke_admin", description="Admin: Revoke bot admin"),
         BotCommand(command="messege_push", description="Admin: Broadcast message to DMs & groups"),
+        BotCommand(command="push_fact", description="Admin: Post cricket fact & dark joke to groups"),
+        BotCommand(command="toggle_fun", description="Admin: Toggle 3h fact/joke auto-post"),
+        BotCommand(command="delete", description="Admin: Reply to delete a bot message"),
     ]
 
     # Default fallback commands

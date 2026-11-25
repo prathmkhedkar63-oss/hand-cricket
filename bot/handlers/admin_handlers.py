@@ -155,10 +155,14 @@ async def cmd_messege_push(message: Message, bot: Bot):
     for gid in sys_settings.get("known_groups", []):
         if isinstance(gid, int) and gid < 0:
             group_ids.add(gid)
+    cur_chat_id = getattr(message.chat, "id", None)
+    if isinstance(cur_chat_id, int) and cur_chat_id < 0:
+        group_ids.add(cur_chat_id)
 
     dm_sent = 0
     grp_sent = 0
     failed = 0
+    dead_groups = set()
 
     for chat_id in list(dm_ids) + list(group_ids):
         try:
@@ -178,8 +182,15 @@ async def cmd_messege_push(message: Message, bot: Bot):
                 dm_sent += 1
             else:
                 grp_sent += 1
-        except Exception:
+        except Exception as e:
             failed += 1
+            err = str(e).lower()
+            if chat_id < 0 and ("forbidden" in err or "chat not found" in err or "kicked" in err):
+                dead_groups.add(chat_id)
+
+    if dead_groups and isinstance(sys_settings.get("known_groups"), list):
+        sys_settings["known_groups"] = [g for g in sys_settings["known_groups"] if g not in dead_groups]
+        await db.save("settings", sys_settings)
 
     await db.append("audit_logs", {
         "actor_id": message.from_user.id,
@@ -194,6 +205,72 @@ async def cmd_messege_push(message: Message, bot: Bot):
         f"❌ Failed: <b>{failed}</b>",
         parse_mode="HTML"
     )
+
+
+@router.message(Command("push_fact", "cricket_fun"))
+async def cmd_push_fact(message: Message, bot: Bot):
+    if not await is_admin(message.from_user.id, message.from_user.username):
+        await message.answer("🚫 Access denied. Only Bot Admins can push cricket facts & jokes.")
+        return
+
+    from bot.services.cricket_fun_service import CricketFunService
+    if getattr(message.chat, "type", None) in ("group", "supergroup"):
+        sys_settings = await db.load("settings")
+        known = sys_settings.setdefault("known_groups", [])
+        if message.chat.id not in known:
+            known.append(message.chat.id)
+            await db.save("settings", sys_settings)
+
+    sent, failed = await CricketFunService.post_to_all_groups(bot, skip_active_matches=False)
+    if sent == -1:
+        await message.answer("⚠️ Could not fetch live cricket headlines from the web right now. Try again shortly.")
+        return
+    await message.answer(
+        f"🏏 <b>LIVE CRICKET HEADLINE & DARK JOKE PUSHED!</b>\n"
+        f"✅ Sent to <b>{sent}</b> group(s) | ❌ Failed: <b>{failed}</b>",
+        parse_mode="HTML"
+    )
+
+
+@router.message(Command("toggle_fun"))
+async def cmd_toggle_fun(message: Message):
+    if not await is_admin(message.from_user.id, message.from_user.username):
+        await message.answer("🚫 Access denied. Only Bot Admins can toggle 3h auto-posts.")
+        return
+
+    sys_settings = await db.load("settings")
+    new_val = not sys_settings.get("fun_autopost_enabled", True)
+    sys_settings["fun_autopost_enabled"] = new_val
+    await db.save("settings", sys_settings)
+    status = "ON (every 3h)" if new_val else "OFF"
+    await message.answer(f"🏏 <b>3h Cricket Fact & Dark Joke Auto-Post:</b> <code>{status}</code>", parse_mode="HTML")
+
+
+@router.message(Command("delete"))
+async def cmd_delete_bot_message(message: Message, bot: Bot):
+    if not await is_admin(message.from_user.id, message.from_user.username):
+        await message.answer("🚫 Access denied. Only Bot Admins can delete bot messages.")
+        return
+
+    reply_msg = message.reply_to_message
+    if not reply_msg:
+        await message.answer("ℹ️ Reply to any bot message with <code>/delete</code> to remove it.", parse_mode="HTML")
+        return
+
+    if reply_msg.from_user and reply_msg.from_user.id != bot.id:
+        await message.answer("⚠️ You can only delete messages sent by the bot.")
+        return
+
+    try:
+        await bot.delete_message(chat_id=message.chat.id, message_id=reply_msg.message_id)
+    except Exception as e:
+        await message.answer(f"⚠️ Could not delete message: {e}")
+        return
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 @router.message(Command("start_bot"))
 async def cmd_start_bot(message: Message):

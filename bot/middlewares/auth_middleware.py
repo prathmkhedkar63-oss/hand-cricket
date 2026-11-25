@@ -62,12 +62,33 @@ class AuthMiddleware(BaseMiddleware):
     updates their username if changed, checks for banned status, and enforces
     admin-controlled bot start/stop state.
     """
+    _known_groups: set = set()
+    _groups_hydrated: bool = False
+
     async def __call__(
         self,
         handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
         event: TelegramObject,
         data: Dict[str, Any]
     ) -> Any:
+        # Auto-track group chat IDs in settings.known_groups (writes once per new group)
+        chat = getattr(event, "chat", None) or getattr(getattr(event, "message", None), "chat", None)
+        chat_id = getattr(chat, "id", None)
+        if chat and isinstance(chat_id, int) and chat_id < 0:
+            if not AuthMiddleware._groups_hydrated:
+                s = await db.load("settings")
+                AuthMiddleware._known_groups.update(
+                    g for g in s.get("known_groups", []) if isinstance(g, int) and g < 0
+                )
+                AuthMiddleware._groups_hydrated = True
+            if chat.id not in AuthMiddleware._known_groups:
+                AuthMiddleware._known_groups.add(chat.id)
+                s = await db.load("settings")
+                known = s.setdefault("known_groups", [])
+                if chat.id not in known:
+                    known.append(chat.id)
+                    await db.save("settings", s)
+
         user: User = data.get("event_from_user")
         if user:
             user_info = await StatsService.get_or_create_user(

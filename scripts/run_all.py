@@ -77,11 +77,13 @@ async def main():
     # 2. Setup Bot
     bot, dp = setup_bot()
 
-    # 3. Concurrently run FastAPI Admin API, Aiogram Bot, and Keep-Alive Pinger
+    # 3. Concurrently run FastAPI Admin API, Aiogram Bot, Keep-Alive Pinger, and 3h Cricket Fun Poster
+    from bot.services.cricket_fun_service import CricketFunService
     await asyncio.gather(
         run_fastapi(),
         run_bot(bot, dp),
-        keep_alive_worker()
+        keep_alive_worker(),
+        CricketFunService.auto_poster_worker(bot)
     )
 
 if __name__ == "__main__":
