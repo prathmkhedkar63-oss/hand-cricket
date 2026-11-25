@@ -309,3 +309,46 @@ async def test_typed_inputs_dm_button_reactions_and_challenge_bot():
     good_msg.react.assert_awaited_once()
 
     GameService.cleanup_match_cache(m_id)
+
+
+@pytest.mark.asyncio
+async def test_dynamic_scoreboard_images_and_db_auto_cleanup():
+    import uuid
+    from game_engine.scoreboard_image import ScoreboardImageGenerator
+    from bot.services.game_service import GameService
+    from database.json_manager import db
+
+    m_id = f"m_img_{uuid.uuid4().hex[:6]}"
+    match = GameEngine.create_match(m_id, 1, "virat", 2, "bumrah", max_balls=12)
+    for b in [6, 4, 1, 6, 0, 4]:
+        GameEngine.record_bowler_choice(match, 2, 5)
+        GameEngine.record_batsman_choice(match, 1, b)
+
+    over_bytes = ScoreboardImageGenerator.render_over_card(match, match.first_innings)
+    assert over_bytes.startswith(b"\xff\xd8\xff")
+    assert len(over_bytes) < 65 * 1024
+
+    # Finish 1st & 2nd innings
+    GameEngine.record_bowler_choice(match, 2, 3)
+    GameEngine.record_batsman_choice(match, 1, 3)
+    GameEngine.record_bowler_choice(match, 1, 6)
+    GameEngine.record_batsman_choice(match, 2, 6)
+
+    match_bytes = ScoreboardImageGenerator.render_match_card(match)
+    assert match_bytes.startswith(b"\xff\xd8\xff")
+    assert len(match_bytes) < 65 * 1024
+
+    # Verify DB auto-cleanup removes ball_history for completed match
+    history = await db.load("ball_history")
+    history.append({"match_id": m_id, "runs_scored": 6})
+    await db.save("ball_history", history)
+    await GameService.cleanup_match_db(m_id)
+    after = await db.load("ball_history")
+    assert not any(isinstance(v, dict) and v.get("match_id") == m_id for v in after)
+
+    # Verify all mapped MP4 clips exist in assets/videos/
+    from bot.services.media_service import MediaService
+    for key, filenames in MediaService.VIDEOS.items():
+        assert filenames
+        for fname in filenames:
+            assert MediaService._resolve_video_path(fname) is not None, f"Missing video {fname} for {key}"

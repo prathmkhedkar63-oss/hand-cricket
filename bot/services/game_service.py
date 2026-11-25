@@ -71,6 +71,22 @@ class GameService:
         cls._bot_last_shot.pop(match_id, None)
 
     @classmethod
+    async def cleanup_match_db(cls, match_id: str):
+        """Auto-deletes ball_history records for a completed match so DB stays lean."""
+        cls._pending_balls = [b for b in cls._pending_balls if b.get("match_id") != match_id]
+        history = await db.load("ball_history")
+        if isinstance(history, list):
+            cleaned = [b for b in history if not (isinstance(b, dict) and b.get("match_id") == match_id)]
+            if len(cleaned) != len(history):
+                await db.save("ball_history", cleaned)
+        elif isinstance(history, dict):
+            keys_to_del = [k for k, v in history.items() if isinstance(v, dict) and v.get("match_id") == match_id]
+            if keys_to_del:
+                for k in keys_to_del:
+                    history.pop(k, None)
+                await db.save("ball_history", history)
+
+    @classmethod
     def start_turn_timer(cls, match_id: str, role: str, bot: Bot, timeout_seconds: Optional[int] = None):
         cls.cancel_turn_timer(match_id)
         timeout = timeout_seconds if timeout_seconds is not None else cls.TURN_TIMEOUT_SECONDS
@@ -263,10 +279,10 @@ class GameService:
             p2_clean = match.player2_username.lstrip("@")
             bat_clean = match.current_batsman_username.lstrip("@")
             bowl_clean = match.current_bowler_username.lstrip("@")
-            await MediaService.send_with_image(
+            await MediaService.send_video_or_animation(
                 bot=bot,
                 chat_id=group_chat_id,
-                image_key="match_start",
+                video_key="on_ready",
                 caption=(
                     f"⚔️ <b>JPL CRICKET BOT • MATCH STARTED!</b>\n\n"
                     f"<b>{p1_clean}</b> VS <b>{p2_clean}</b> ({match.round_name})\n"
@@ -446,29 +462,50 @@ class GameService:
         else:
             recent.clear()
 
-        # 1. Announce ball result in group (club with wicket/six image on big moments)
+        # 1. Announce ball result in group (use MP4 clips for out, 50, 100, 6, 4, dot)
         if match.group_chat_id:
             ball_text = ScoreboardFormatter.format_ball_result(ball, match, recent_runs=recent)
+            prev_runs = ball.current_score - (0 if ball.is_wicket else ball.runs_scored)
             try:
                 if ball.is_wicket:
-                    await MediaService.send_with_image(bot, match.group_chat_id, "wicket", ball_text)
+                    await MediaService.send_video_or_animation(bot, match.group_chat_id, "out", ball_text)
+                elif prev_runs < 100 <= ball.current_score:
+                    await MediaService.send_video_or_animation(bot, match.group_chat_id, "100", ball_text)
+                elif prev_runs < 50 <= ball.current_score:
+                    await MediaService.send_video_or_animation(bot, match.group_chat_id, "50", ball_text)
                 elif ball.runs_scored == 6:
-                    await MediaService.send_with_image(bot, match.group_chat_id, "six", ball_text)
+                    await MediaService.send_video_or_animation(bot, match.group_chat_id, "6", ball_text)
+                elif ball.runs_scored == 4:
+                    await MediaService.send_video_or_animation(bot, match.group_chat_id, "4", ball_text)
+                elif ball.runs_scored == 0:
+                    await MediaService.send_video_or_animation(bot, match.group_chat_id, "dot", ball_text)
                 else:
                     await bot.send_message(chat_id=match.group_chat_id, text=ball_text, parse_mode="HTML")
             except Exception as e:
                 logger.error(f"Failed to announce ball result: {e}")
 
-            # 2. Post full Scorecard ONLY at end of over (every 6 balls), innings break, or match completion
+            # 2. Post Over Scoreboard image at end of over (skip if match just ended)
             is_over_end = (ball.ball_number > 0 and ball.ball_number % 6 == 0)
             is_innings_break = (match.current_innings != old_innings)
             is_match_end = (match.status in [MatchStatus.COMPLETED, MatchStatus.TIED])
-            if is_over_end or is_innings_break or is_match_end:
+            if not is_match_end and (is_over_end or is_innings_break):
                 sb_text = ScoreboardFormatter.format_live_scoreboard(match)
                 try:
-                    new_sb = await bot.send_message(chat_id=match.group_chat_id, text=sb_text, parse_mode="HTML")
-                    match.group_scoreboard_msg_id = new_sb.message_id
-                    await cls.save_match(match)
+                    if is_over_end and not is_innings_break:
+                        from game_engine.scoreboard_image import ScoreboardImageGenerator
+                        inn_obj = match.first_innings if ball.innings_num == 1 else match.second_innings
+                        if inn_obj:
+                            over_bytes = ScoreboardImageGenerator.render_over_card(match, inn_obj)
+                            new_sb = await MediaService.send_generated_image(
+                                bot, match.group_chat_id, over_bytes, "over_summary.jpg", sb_text
+                            )
+                        else:
+                            new_sb = await bot.send_message(chat_id=match.group_chat_id, text=sb_text, parse_mode="HTML")
+                    else:
+                        new_sb = await bot.send_message(chat_id=match.group_chat_id, text=sb_text, parse_mode="HTML")
+                    if new_sb and isinstance(getattr(new_sb, "message_id", None), int):
+                        match.group_scoreboard_msg_id = new_sb.message_id
+                        await cls.save_match(match)
                 except Exception:
                     pass
 
@@ -498,11 +535,19 @@ class GameService:
         if match.status in [MatchStatus.COMPLETED, MatchStatus.TIED]:
             cls.cleanup_match_cache(match.match_id)
             await StatsService.update_match_stats(match)
+            await cls.cleanup_match_db(match.match_id)
 
             summary_text = ScoreboardFormatter.format_match_summary(match)
             if match.group_chat_id:
                 try:
-                    await MediaService.send_with_image(bot, match.group_chat_id, "champion", summary_text)
+                    await MediaService.send_video_or_animation(
+                        bot, match.group_chat_id, "match_over", f"🏁 <b>MATCH OVER!</b>"
+                    )
+                    from game_engine.scoreboard_image import ScoreboardImageGenerator
+                    card_bytes = ScoreboardImageGenerator.render_match_card(match)
+                    await MediaService.send_generated_image(
+                        bot, match.group_chat_id, card_bytes, "match_scorecard.jpg", summary_text
+                    )
                 except Exception:
                     pass
 
