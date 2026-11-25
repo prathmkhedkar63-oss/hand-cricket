@@ -87,8 +87,11 @@ class GameService:
                 continue
 
     @classmethod
-    async def cleanup_match_db(cls, match_id: str):
-        """Auto-deletes ball_history records for a completed match so DB stays lean."""
+    async def cleanup_match_db(cls, match_id: str, max_completed_matches: int = 50):
+        """
+        Auto-deletes ball_history records for a completed match and prunes old
+        completed matches beyond max_completed_matches so RAM/disk stay lean.
+        """
         cls._pending_balls = [b for b in cls._pending_balls if b.get("match_id") != match_id]
         history = await db.load("ball_history")
         if isinstance(history, list):
@@ -101,6 +104,20 @@ class GameService:
                 for k in keys_to_del:
                     history.pop(k, None)
                 await db.save("ball_history", history)
+
+        matches_db = await db.load("matches")
+        if isinstance(matches_db, dict):
+            done_statuses = {MatchStatus.COMPLETED.value, MatchStatus.TIED.value, MatchStatus.ABANDONED.value}
+            completed = [
+                (mid, m.get("updated_at", m.get("created_at", 0.0)))
+                for mid, m in matches_db.items()
+                if isinstance(m, dict) and m.get("status") in done_statuses
+            ]
+            if len(completed) > max_completed_matches:
+                completed.sort(key=lambda item: item[1])
+                for mid, _ in completed[:len(completed) - max_completed_matches]:
+                    matches_db.pop(mid, None)
+                await db.save("matches", matches_db)
 
     @classmethod
     def start_turn_timer(cls, match_id: str, role: str, bot: Bot, timeout_seconds: Optional[int] = None):

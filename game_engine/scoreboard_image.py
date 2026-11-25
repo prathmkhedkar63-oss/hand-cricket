@@ -1,10 +1,12 @@
 import io
+from functools import lru_cache
 from typing import List, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFont
 
 from game_engine.models import InningsState, MatchState
 
 
+@lru_cache(maxsize=16)
 def _load_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
     """Load a crisp TrueType font if available, falling back to Pillow default."""
     candidates = (
@@ -30,10 +32,15 @@ def _clean_name(name: str, limit: int = 16) -> str:
 
 
 def _to_jpeg_bytes(img: Image.Image, quality: int = 82) -> bytes:
-    """Encode image to compact JPEG bytes purely in memory (never written to disk)."""
-    buf = io.BytesIO()
-    img.convert("RGB").save(buf, format="JPEG", quality=quality, optimize=True)
-    return buf.getvalue()
+    """Encode image to compact JPEG bytes purely in memory and close buffers immediately."""
+    rgb = img.convert("RGB")
+    try:
+        with io.BytesIO() as buf:
+            rgb.save(buf, format="JPEG", quality=quality, optimize=True)
+            return buf.getvalue()
+    finally:
+        rgb.close()
+        img.close()
 
 
 def _draw_gradient_bg(width: int, height: int) -> Image.Image:
