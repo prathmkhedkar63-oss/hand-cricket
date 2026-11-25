@@ -43,35 +43,45 @@ class RateLimitMiddleware(BaseMiddleware):
             uid = user.id
             self._prune_stale(now)
 
+            # Exempt single-digit gameplay moves (0-6) from flood mute (keep 0.25s debounce)
+            is_gameplay_num = (
+                isinstance(event, Message)
+                and event.text is not None
+                and event.text.strip() in {"0", "1", "2", "3", "4", "5", "6"}
+            )
+            min_gap = 0.25 if is_gameplay_num else self.limit_seconds
+
             # 1. Check active flood mute
-            mute_end = self.muted_until.get(uid, 0.0)
-            if now < mute_end:
-                if isinstance(event, CallbackQuery):
-                    await event.answer("⏳ Slow down! Too many requests.", show_alert=False)
-                elif isinstance(event, Message) and now - self.mute_notified.get(uid, 0.0) > self.mute_seconds:
-                    self.mute_notified[uid] = now
-                    await event.reply("⏳ Anti-spam active: please wait a few seconds.")
-                return
+            if not is_gameplay_num:
+                mute_end = self.muted_until.get(uid, 0.0)
+                if now < mute_end:
+                    if isinstance(event, CallbackQuery):
+                        await event.answer("⏳ Slow down! Too many requests.", show_alert=False)
+                    elif isinstance(event, Message) and now - self.mute_notified.get(uid, 0.0) > self.mute_seconds:
+                        self.mute_notified[uid] = now
+                        await event.reply("⏳ Anti-spam active: please wait a few seconds.")
+                    return
 
             # 2. Check short cooldown
             last_time = self.user_last_action.get(uid, 0.0)
-            if now - last_time < self.limit_seconds:
+            if now - last_time < min_gap:
                 if isinstance(event, CallbackQuery):
                     await event.answer("⏳ Please slow down!", show_alert=False)
                 return
             self.user_last_action[uid] = now
 
-            # 3. Sliding-window flood detection
-            window = self.user_timestamps.setdefault(uid, deque(maxlen=self.flood_count + 1))
-            window.append(now)
-            if len(window) >= self.flood_count and (now - window[0]) < self.flood_window:
-                self.muted_until[uid] = now + self.mute_seconds
-                window.clear()
-                if isinstance(event, CallbackQuery):
-                    await event.answer("🚫 Spam detected! Cooldown for 10s.", show_alert=True)
-                elif isinstance(event, Message):
-                    self.mute_notified[uid] = now
-                    await event.reply("🚫 Spam detected! Please wait 10 seconds before sending more commands.")
-                return
+            # 3. Sliding-window flood detection (non-gameplay spam)
+            if not is_gameplay_num:
+                window = self.user_timestamps.setdefault(uid, deque(maxlen=self.flood_count + 1))
+                window.append(now)
+                if len(window) >= self.flood_count and (now - window[0]) < self.flood_window:
+                    self.muted_until[uid] = now + self.mute_seconds
+                    window.clear()
+                    if isinstance(event, CallbackQuery):
+                        await event.answer("🚫 Spam detected! Cooldown for 10s.", show_alert=True)
+                    elif isinstance(event, Message):
+                        self.mute_notified[uid] = now
+                        await event.reply("🚫 Spam detected! Please wait 10 seconds before sending more commands.")
+                    return
 
         return await handler(event, data)

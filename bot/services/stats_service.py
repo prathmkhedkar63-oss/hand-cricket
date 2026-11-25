@@ -69,21 +69,25 @@ class StatsService:
     @staticmethod
     async def update_match_stats(match: MatchState):
         """
-        Updates statistics for both players upon match completion.
+        Updates statistics for human players upon match completion (skips AI Bot ID).
         """
+        from game_engine.bot_ai import BotPsychologyEngine
+
         stats = await db.load("statistics")
         now = time.time()
 
+        p1_is_bot = (match.player1_id == BotPsychologyEngine.BOT_USER_ID)
+        p2_is_bot = (match.player2_id == BotPsychologyEngine.BOT_USER_ID)
         p1_id = str(match.player1_id)
         p2_id = str(match.player2_id)
 
-        if p1_id not in stats:
+        if not p1_is_bot and p1_id not in stats:
             stats[p1_id] = StatsService._create_empty_stats(match.player1_id, match.player1_username, now)
-        if p2_id not in stats:
+        if not p2_is_bot and p2_id not in stats:
             stats[p2_id] = StatsService._create_empty_stats(match.player2_id, match.player2_username, now)
 
-        p1_stats = stats[p1_id]
-        p2_stats = stats[p2_id]
+        p1_stats = stats.get(p1_id) if not p1_is_bot else None
+        p2_stats = stats.get(p2_id) if not p2_is_bot else None
 
         p1_inn = match.first_innings
         p2_inn = match.second_innings
@@ -95,46 +99,52 @@ class StatsService:
         p2_dismissed = 1 if (p2_inn and p2_inn.wickets > 0) else 0
 
         # Update Player 1
-        p1_stats["matches_played"] += 1
-        p1_stats["total_runs"] += p1_runs
-        p1_stats["highest_score"] = max(p1_stats["highest_score"], p1_runs)
-        p1_stats["total_dismissals"] += p1_dismissed
-        p1_stats["last_active"] = now
+        if p1_stats:
+            p1_stats["matches_played"] += 1
+            p1_stats["total_runs"] += p1_runs
+            p1_stats["highest_score"] = max(p1_stats["highest_score"], p1_runs)
+            p1_stats["total_dismissals"] += p1_dismissed
+            p1_stats["last_active"] = now
 
         # Update Player 2
-        p2_stats["matches_played"] += 1
-        p2_stats["total_runs"] += p2_runs
-        p2_stats["highest_score"] = max(p2_stats["highest_score"], p2_runs)
-        p2_stats["total_dismissals"] += p2_dismissed
-        p2_stats["last_active"] = now
+        if p2_stats:
+            p2_stats["matches_played"] += 1
+            p2_stats["total_runs"] += p2_runs
+            p2_stats["highest_score"] = max(p2_stats["highest_score"], p2_runs)
+            p2_stats["total_dismissals"] += p2_dismissed
+            p2_stats["last_active"] = now
 
         # Winner / Loser / Tie
         if match.status == MatchStatus.TIED:
-            p1_stats["matches_drawn"] += 1
-            p2_stats["matches_drawn"] += 1
-            p1_stats["current_streak"] = 0
-            p2_stats["current_streak"] = 0
+            if p1_stats:
+                p1_stats["matches_drawn"] += 1
+                p1_stats["current_streak"] = 0
+            if p2_stats:
+                p2_stats["matches_drawn"] += 1
+                p2_stats["current_streak"] = 0
         elif match.winner_id == match.player1_id:
-            p1_stats["matches_won"] += 1
-            p1_stats["weekly_wins"] += 1
-            p1_stats["monthly_wins"] += 1
-            p1_stats["current_streak"] += 1
-            p1_stats["highest_streak"] = max(p1_stats["highest_streak"], p1_stats["current_streak"])
-
-            p2_stats["matches_lost"] += 1
-            p2_stats["current_streak"] = 0
+            if p1_stats:
+                p1_stats["matches_won"] += 1
+                p1_stats["weekly_wins"] += 1
+                p1_stats["monthly_wins"] += 1
+                p1_stats["current_streak"] += 1
+                p1_stats["highest_streak"] = max(p1_stats["highest_streak"], p1_stats["current_streak"])
+            if p2_stats:
+                p2_stats["matches_lost"] += 1
+                p2_stats["current_streak"] = 0
         elif match.winner_id == match.player2_id:
-            p2_stats["matches_won"] += 1
-            p2_stats["weekly_wins"] += 1
-            p2_stats["monthly_wins"] += 1
-            p2_stats["current_streak"] += 1
-            p2_stats["highest_streak"] = max(p2_stats["highest_streak"], p2_stats["current_streak"])
-
-            p1_stats["matches_lost"] += 1
-            p1_stats["current_streak"] = 0
+            if p2_stats:
+                p2_stats["matches_won"] += 1
+                p2_stats["weekly_wins"] += 1
+                p2_stats["monthly_wins"] += 1
+                p2_stats["current_streak"] += 1
+                p2_stats["highest_streak"] = max(p2_stats["highest_streak"], p2_stats["current_streak"])
+            if p1_stats:
+                p1_stats["matches_lost"] += 1
+                p1_stats["current_streak"] = 0
 
         # Recalculate Averages & Win %
-        for s in [p1_stats, p2_stats]:
+        for s in [x for x in (p1_stats, p2_stats) if x]:
             d = max(1, s["total_dismissals"])
             s["batting_average"] = round(s["total_runs"] / d, 2)
             if s["matches_played"] > 0:

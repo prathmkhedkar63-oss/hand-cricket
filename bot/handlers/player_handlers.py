@@ -247,15 +247,36 @@ async def cmd_start_tournament_direct(message: Message):
 @router.message(Command("cancel"))
 async def cmd_cancel_group_tournament(message: Message, bot: Bot):
     """
-    Cancels all ongoing tournaments and matches in the current group.
-    Allowed ONLY for Group Admins or @prathamesh63 / Super Admins.
-    Always displays the current scorecard for any cancelled match.
+    Cancels all ongoing tournaments and matches in the current group,
+    or cancels an active 1v1 /challenge_bot match in private DM.
     """
-    if message.chat.type not in ["group", "supergroup"]:
-        await message.answer("This command is for cancelling ongoing tournaments/matches in a group.")
+    user = message.from_user
+    chat_id = message.chat.id
+
+    if message.chat.type == "private":
+        matches_db = await db.load("matches")
+        cancelled = []
+        for mid in [k for k, m in GameService.active_matches.items() if m.group_chat_id == chat_id]:
+            m = GameService.active_matches.pop(mid, None)
+            if m:
+                GameService.cleanup_match_cache(mid)
+                m.status = MatchStatus.ABANDONED
+                m.result_text = f"Cancelled by @{user.username or user.id}"
+                matches_db[mid] = m.model_dump()
+                cancelled.append(m)
+        if not cancelled:
+            await message.answer("ℹ️ You have no active match in DM.")
+            return
+        await GameService.flush_pending_balls()
+        await db.save("matches", matches_db)
+        for m in cancelled:
+            await message.answer(ScoreboardFormatter.format_live_scoreboard(m), parse_mode="HTML")
+        await message.answer("🛑 Your DM match has been cancelled.")
         return
 
-    user = message.from_user
+    if message.chat.type not in ["group", "supergroup"]:
+        await message.answer("This command is for cancelling ongoing tournaments/matches in a group or DM.")
+        return
     if not await is_group_admin_or_super(bot, message.chat.id, user.id, user.username or ""):
         await message.answer("🚫 Only Group Admins or Bot Admins can cancel ongoing tournaments or matches!")
         return

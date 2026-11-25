@@ -44,14 +44,21 @@ async def on_private_typed_input(message: Message, bot: Bot):
         return
 
     if bowl_match:
+        from game_engine.bot_ai import BotPsychologyEngine
+        is_vs_bot = (bowl_match.current_batsman_id == BotPsychologyEngine.BOT_USER_ID)
+        await GameService.react_positive(message)
+        if is_vs_bot:
+            await message.reply(
+                f"🔒 <b>BALL DELIVERED: {number}</b>\n🤖 @HandCricketAI is playing its shot...",
+                parse_mode="HTML"
+            )
         success, msg = await GameService.handle_bowler_delivery(bowl_match.match_id, user_id, number, bot)
-        if success:
-            await GameService.react_positive(message)
+        if success and not is_vs_bot:
             await message.reply(
                 f"🔒 <b>BALL DELIVERED!</b>\n\nYour secret delivery: <b>{number}</b>\n\nWaiting for @{bowl_match.current_batsman_username} to bat!",
                 parse_mode="HTML"
             )
-        else:
+        elif not success:
             await message.reply(f"⚠️ {msg}")
     else:
         success, msg = await GameService.handle_batsman_shot(dm_bat_match.match_id, user_id, number, bot)
@@ -80,6 +87,21 @@ async def on_group_typed_input(message: Message, bot: Bot):
             break
 
     if not target_match:
+        # Helpful nudge if the active bowler accidentally typed a number in the group instead of Bot DM
+        if raw.isdigit() and 0 <= int(raw) <= 6:
+            for match in GameService.active_matches.values():
+                if (
+                    match.status == MatchStatus.IN_PROGRESS
+                    and match.group_chat_id == chat_id
+                    and match.current_bowler_id == user_id
+                    and match.pending_bowler_number is None
+                ):
+                    from bot.keyboards.game_keyboards import get_go_to_dm_keyboard
+                    await message.reply(
+                        "🎯 You are bowling! Please type your number privately in Bot DM:",
+                        reply_markup=get_go_to_dm_keyboard(GameService._get_bot_username(bot))
+                    )
+                    break
         return
 
     # Validate numeric input when active batsman's turn is expected
