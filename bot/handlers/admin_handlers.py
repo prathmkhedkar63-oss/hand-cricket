@@ -16,6 +16,105 @@ router = Router(name="admin_handlers")
 async def is_admin(user_id: int, username: str = None) -> bool:
     return await is_admin_user(user_id, username)
 
+
+async def _resolve_target_user(message: Message):
+    """Resolve target (user_id, clean_username) from reply or command argument."""
+    if message.reply_to_message and message.reply_to_message.from_user:
+        u = message.reply_to_message.from_user
+        uname = (u.username or u.first_name or str(u.id)).lstrip("@")
+        return u.id, uname
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        return None, None
+
+    arg = parts[1].strip().lstrip("@")
+    clean_lower = arg.lower()
+    users = await db.load("users")
+    for uid_str, u_data in users.items():
+        if isinstance(u_data, dict) and (u_data.get("username") or "").lstrip("@").lower() == clean_lower:
+            return int(uid_str), (u_data.get("username") or arg).lstrip("@")
+    if arg.isdigit():
+        return int(arg), arg
+    return None, arg
+
+
+@router.message(Command("administrator"))
+async def cmd_administrator(message: Message):
+    if not await is_admin(message.from_user.id, message.from_user.username):
+        await message.answer("🚫 Access denied. Only Bot Admins can promote administrators.")
+        return
+
+    target_id, target_uname = await _resolve_target_user(message)
+    if not target_uname:
+        await message.answer("ℹ️ Usage: <code>/administrator @username</code> or reply to a user's message.", parse_mode="HTML")
+        return
+
+    clean_lower = target_uname.lower()
+    admins = await db.load("admins")
+    key = str(target_id) if target_id is not None else f"uname:{clean_lower}"
+    admins[key] = {
+        "user_id": target_id,
+        "username": target_uname,
+        "role": "admin",
+        "is_active": True,
+        "added_at": time.time()
+    }
+    await db.save("admins", admins)
+
+    await db.append("audit_logs", {
+        "actor_id": message.from_user.id,
+        "actor": message.from_user.username or str(message.from_user.id),
+        "action": "grant_admin",
+        "target": target_uname,
+        "timestamp": time.time()
+    })
+    await message.answer(f"✅ @{target_uname} is admin now")
+
+
+@router.message(Command("revoke_admin"))
+async def cmd_revoke_admin(message: Message):
+    if not await is_admin(message.from_user.id, message.from_user.username):
+        await message.answer("🚫 Access denied. Only Bot Admins can revoke admin rights.")
+        return
+
+    target_id, target_uname = await _resolve_target_user(message)
+    if not target_uname:
+        await message.answer("ℹ️ Usage: <code>/revoke_admin @username</code> or reply to a user's message.", parse_mode="HTML")
+        return
+
+    clean_lower = target_uname.lower()
+    super_uname = settings.SUPER_ADMIN_USERNAME.lstrip("@").lower()
+    if (target_id is not None and target_id == settings.SUPER_ADMIN_ID) or clean_lower == super_uname:
+        await message.answer("🚫 Cannot revoke Super Admin rights.")
+        return
+
+    admins = await db.load("admins")
+    removed = False
+    if target_id is not None and str(target_id) in admins:
+        admins.pop(str(target_id), None)
+        removed = True
+    if f"uname:{clean_lower}" in admins:
+        admins.pop(f"uname:{clean_lower}", None)
+        removed = True
+    for k in [k for k, v in admins.items() if isinstance(v, dict) and (v.get("username") or "").lstrip("@").lower() == clean_lower]:
+        admins.pop(k, None)
+        removed = True
+
+    if not removed:
+        await message.answer(f"ℹ️ @{target_uname} is not an admin.")
+        return
+
+    await db.save("admins", admins)
+    await db.append("audit_logs", {
+        "actor_id": message.from_user.id,
+        "actor": message.from_user.username or str(message.from_user.id),
+        "action": "revoke_admin",
+        "target": target_uname,
+        "timestamp": time.time()
+    })
+    await message.answer(f"🚫 @{target_uname} admin rights revoked.")
+
 @router.message(Command("start_bot"))
 async def cmd_start_bot(message: Message):
     if not await is_admin(message.from_user.id, message.from_user.username):
@@ -53,9 +152,17 @@ async def cmd_stop_bot(message: Message, bot: Bot):
         "timestamp": time.time()
     })
 
-    # Display current scorecards for any ongoing matches even while stopping
+    # Cancel all active turn timers and solo countdowns so nothing runs while stopped
     from bot.services.game_service import GameService
     from game_engine.scoreboard import ScoreboardFormatter
+    for mid in list(GameService._turn_timers.keys()):
+        GameService.cancel_turn_timer(mid)
+    for tid, task in list(SoloTournamentService._running_countdowns.items()):
+        if task and not task.done():
+            task.cancel()
+        SoloTournamentService._running_countdowns.pop(tid, None)
+
+    # Display current scorecards for any ongoing matches even while stopping
     for m in list(GameService.active_matches.values()):
         sb = ScoreboardFormatter.format_live_scoreboard(m)
         if m.group_chat_id:

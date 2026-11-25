@@ -83,3 +83,35 @@ async def test_rate_limit_anti_spam_and_pruning():
         rl.user_last_action[100000 + i] = 0.0
     rl._prune_stale(999999999.0)
     assert len(rl.user_last_action) < 10
+
+
+@pytest.mark.asyncio
+async def test_administrator_and_revoke_admin():
+    from unittest.mock import AsyncMock, MagicMock
+    from bot.handlers.admin_handlers import cmd_administrator, cmd_revoke_admin
+    from bot.middlewares.auth_middleware import is_admin_user
+    from config.settings import settings
+
+    # Grant admin by @username
+    grant_msg = MagicMock()
+    grant_msg.from_user = MagicMock(id=999001, username=settings.SUPER_ADMIN_USERNAME.lstrip("@"))
+    grant_msg.reply_to_message = None
+    grant_msg.text = "/administrator @new_mod_user"
+    grant_msg.answer = AsyncMock()
+
+    await cmd_administrator(grant_msg)
+    grant_msg.answer.assert_awaited_once()
+    assert "@new_mod_user is admin now" in grant_msg.answer.call_args[0][0]
+    assert await is_admin_user(888002, "new_mod_user")
+
+    # Revoke admin rights
+    revoke_msg = MagicMock()
+    revoke_msg.from_user = MagicMock(id=999001, username=settings.SUPER_ADMIN_USERNAME.lstrip("@"))
+    revoke_msg.reply_to_message = None
+    revoke_msg.text = "/revoke_admin @new_mod_user"
+    revoke_msg.answer = AsyncMock()
+
+    await cmd_revoke_admin(revoke_msg)
+    revoke_msg.answer.assert_awaited_once()
+    assert "admin rights revoked" in revoke_msg.answer.call_args[0][0]
+    assert not await is_admin_user(888002, "new_mod_user")

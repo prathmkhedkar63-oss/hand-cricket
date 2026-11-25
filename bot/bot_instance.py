@@ -44,6 +44,8 @@ async def setup_bot_commands(bot: Bot):
         BotCommand(command="admin", description="Open Admin Dashboard"),
         BotCommand(command="start_bot", description="Admin: Enable bot"),
         BotCommand(command="stop_bot", description="Admin: Stop bot for maintenance"),
+        BotCommand(command="administrator", description="Admin: Grant bot admin rights"),
+        BotCommand(command="revoke_admin", description="Admin: Revoke bot admin rights"),
     ]
 
     # Group chat commands
@@ -75,6 +77,8 @@ async def setup_bot_commands(bot: Bot):
         BotCommand(command="help", description="Show complete command guide"),
         BotCommand(command="start_bot", description="Admin: Enable bot"),
         BotCommand(command="stop_bot", description="Admin: Stop bot"),
+        BotCommand(command="administrator", description="Admin: Make user bot admin"),
+        BotCommand(command="revoke_admin", description="Admin: Revoke bot admin"),
     ]
 
     # Default fallback commands

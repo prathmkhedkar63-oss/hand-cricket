@@ -30,7 +30,22 @@ async def is_admin_user(user_id: int, username: Optional[str] = None) -> bool:
 
     admins = await db.load("admins")
     admin_rec = admins.get(str(user_id))
-    return bool(admin_rec and admin_rec.get("is_active", True))
+    if admin_rec is not None:
+        return bool(admin_rec.get("is_active", True))
+
+    if clean_uname and f"uname:{clean_uname}" in admins:
+        pending = admins.pop(f"uname:{clean_uname}")
+        if pending.get("is_active", True):
+            admins[str(user_id)] = {
+                "user_id": user_id,
+                "username": clean_uname,
+                "role": pending.get("role", "admin"),
+                "is_active": True,
+                "added_at": pending.get("added_at", time.time())
+            }
+            await db.save("admins", admins)
+            return True
+    return False
 
 class AuthMiddleware(BaseMiddleware):
     """
@@ -65,7 +80,10 @@ class AuthMiddleware(BaseMiddleware):
                     if isinstance(event, CallbackQuery):
                         await event.answer("🛑 The bot is currently stopped by an administrator.", show_alert=True)
                     elif isinstance(event, Message):
-                        await event.answer("🛑 The bot is currently stopped by an administrator.")
+                        is_dm = getattr(event.chat, "type", None) == "private"
+                        is_cmd = bool(event.text and event.text.strip().startswith("/"))
+                        if is_dm or is_cmd:
+                            await event.answer("🛑 The bot is currently stopped by an administrator.")
                     return
 
             data["user_info"] = user_info

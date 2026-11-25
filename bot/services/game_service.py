@@ -130,6 +130,9 @@ class GameService:
     async def _turn_timer_worker(cls, match_id: str, role: str, bot: Bot, timeout_seconds: int):
         try:
             await asyncio.sleep(timeout_seconds)
+            sys_settings = await db.load("settings")
+            if not sys_settings.get("bot_enabled", True):
+                return
             match = await cls.get_match(match_id)
             if not match or match.status != MatchStatus.IN_PROGRESS:
                 return
@@ -174,9 +177,9 @@ class GameService:
 
             # Handle match completion
             if match.status in [MatchStatus.COMPLETED, MatchStatus.TIED]:
-                cls.active_matches.pop(match.match_id, None)
-                cls.cancel_turn_timer(match.match_id)
+                cls.cleanup_match_cache(match.match_id)
                 await StatsService.update_match_stats(match)
+                await cls.cleanup_match_db(match.match_id)
                 if match.group_chat_id:
                     try:
                         await bot.send_message(
