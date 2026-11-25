@@ -53,21 +53,20 @@ class ScoreboardFormatter:
 
     @staticmethod
     def format_live_scoreboard(match: MatchState) -> str:
-        p1 = f"@{match.player1_username}" if match.player1_username else f"Player ({match.player1_id})"
-        p2 = f"@{match.player2_username}" if match.player2_username else f"Player ({match.player2_id})"
+        p1 = (match.player1_username or f"Player {match.player1_id}").lstrip("@")
+        p2 = (match.player2_username or f"Player {match.player2_id}").lstrip("@")
 
         first_inn = match.first_innings
         second_inn = match.second_innings
 
         # 1st Innings string
         if first_inn:
-            f_batsman = f"@{first_inn.batsman_username}"
-            f_bowler = f"@{first_inn.bowler_username}"
+            f_batsman = first_inn.batsman_username.lstrip("@")
+            f_bowler = first_inn.bowler_username.lstrip("@")
             f_overs = ScoreboardFormatter._format_overs(first_inn.balls)
             f_crr = ScoreboardFormatter._format_crr(first_inn.runs, first_inn.balls)
             f_text = (
-                f"Batsman: {f_batsman}\n"
-                f"Bowler: {f_bowler}\n"
+                f"Batsman: <b>{f_batsman}</b> | Bowler: <b>{f_bowler}</b>\n"
                 f"Score: <b>{first_inn.runs}/{first_inn.wickets}</b> "
                 f"({f_overs} Ov | CRR: {f_crr})"
             )
@@ -81,13 +80,12 @@ class ScoreboardFormatter:
 
         # 2nd Innings string
         if second_inn:
-            s_batsman = f"@{second_inn.batsman_username}"
-            s_bowler = f"@{second_inn.bowler_username}"
+            s_batsman = second_inn.batsman_username.lstrip("@")
+            s_bowler = second_inn.bowler_username.lstrip("@")
             s_overs = ScoreboardFormatter._format_overs(second_inn.balls)
             s_crr = ScoreboardFormatter._format_crr(second_inn.runs, second_inn.balls)
             s_text = (
-                f"Batsman: {s_batsman}\n"
-                f"Bowler: {s_bowler}\n"
+                f"Batsman: <b>{s_batsman}</b> | Bowler: <b>{s_bowler}</b>\n"
                 f"Score: <b>{second_inn.runs}/{second_inn.wickets}</b> "
                 f"({s_overs} Ov | CRR: {s_crr})"
             )
@@ -101,12 +99,11 @@ class ScoreboardFormatter:
 
         target_str = str(match.target) if match.target is not None else "Pending"
         status_display = match.status.value.replace("_", " ").upper()
-        title = "🔥 <b>SUPER OVER LIVE SCOREBOARD</b>" if match.is_super_over else "🏏 <b>HAND CRICKET SCORECARD</b>"
+        title = "🔥 <b>JPL CRICKET BOT • SUPER OVER</b>" if match.is_super_over else "🏏 <b>JPL CRICKET BOT • SCORECARD</b>"
 
         text = (
             f"{title}\n\n"
-            f"⚔️ <b>{p1} VS {p2}</b>\n"
-            f"🏆 Round: {match.round_name}\n"
+            f"⚔️ <b>{p1} VS {p2}</b> ({match.round_name})\n"
             f"➖➖➖➖➖➖➖➖➖➖\n"
             f"🥇 <b>FIRST INNINGS</b>\n"
             f"{f_text}\n"
@@ -123,25 +120,26 @@ class ScoreboardFormatter:
         text += f"⚡ <b>STATUS:</b> {status_display}\n"
 
         if match.status == MatchStatus.COMPLETED and match.result_text:
-            text += f"\n🏆 <b>RESULT:</b> {match.result_text}"
+            clean_res = match.result_text.replace("@", "")
+            text += f"\n🏆 <b>RESULT:</b> {clean_res}"
 
         return text
 
     @staticmethod
     def format_match_summary(match: MatchState) -> str:
         """
-        Generates a rich post-match summary card with 4s, 6s, Strike Rate, and Man of the Match.
+        Generates a clean post-match summary card with 4s, 6s, Strike Rate, and Man of the Match (no @ tags).
         """
         def _inn_line(inn: Optional[InningsState], label: str) -> str:
             if not inn:
                 return f"{label}: Did not bat"
             sr = f"{(inn.runs / inn.balls) * 100:.1f}" if inn.balls > 0 else "0.0"
+            b_name = inn.batsman_username.lstrip("@")
             return (
-                f"👤 <b>@{inn.batsman_username}</b>: <b>{inn.runs}/{inn.wickets}</b> ({inn.balls}b)\n"
+                f"👤 <b>{b_name}</b>: <b>{inn.runs}/{inn.wickets}</b> ({inn.balls}b)\n"
                 f"   ⚡ SR: <b>{sr}</b> | 4s: <b>{inn.fours}</b> | 6s: <b>{inn.sixes}</b>"
             )
 
-        # Calculate Man of the Match score
         p1_score = 0.0
         p2_score = 0.0
         if match.first_innings:
@@ -158,18 +156,22 @@ class ScoreboardFormatter:
         elif match.winner_id == match.player2_id:
             p2_score += 20
 
-        motm = match.player1_username if p1_score >= p2_score else match.player2_username
+        motm = (match.player1_username if p1_score >= p2_score else match.player2_username).lstrip("@")
+        p1_clean = match.player1_username.lstrip("@")
+        p2_clean = match.player2_username.lstrip("@")
+        winner_clean = (match.winner_username or "Tie").lstrip("@")
+        res_clean = (match.result_text or "").replace("@", "")
 
         return (
-            f"📋 <b>MATCH SUMMARY CARD</b>\n\n"
-            f"⚔️ @{match.player1_username} VS @{match.player2_username}\n"
+            f"📋 <b>JPL CRICKET BOT • MATCH SUMMARY</b>\n\n"
+            f"⚔️ <b>{p1_clean}</b> VS <b>{p2_clean}</b>\n"
             f"➖➖➖➖➖➖➖➖➖➖\n"
             f"{_inn_line(match.first_innings, '1st Innings')}\n\n"
             f"{_inn_line(match.second_innings, '2nd Innings')}\n"
             f"➖➖➖➖➖➖➖➖➖➖\n"
-            f"🏆 <b>Winner:</b> @{match.winner_username or 'Tie'}\n"
-            f"📝 {match.result_text or ''}\n"
-            f"🏅 <b>Man of the Match:</b> @{motm}"
+            f"🏆 <b>Winner:</b> <b>{winner_clean}</b>\n"
+            f"📝 {res_clean}\n"
+            f"🏅 <b>Man of the Match:</b> <b>{motm}</b>"
         )
 
     @staticmethod
@@ -178,16 +180,17 @@ class ScoreboardFormatter:
         match: MatchState,
         recent_runs: Optional[List[int]] = None
     ) -> str:
-        batsman = f"@{ball.batsman_username}"
-        bowler = f"@{ball.bowler_username}"
+        batsman = ball.batsman_username.lstrip("@")
+        bowler = ball.bowler_username.lstrip("@")
         current_inn = match.second_innings if ball.innings_num == 2 else match.first_innings
         score_str = f"{current_inn.runs}/{current_inn.wickets}" if current_inn else "0/0"
+        overs_str = ScoreboardFormatter._format_overs(ball.ball_number)
         new_runs = current_inn.runs if current_inn else ball.current_score
         prev_runs = max(0, new_runs - ball.runs_scored)
 
         comm = CommentaryEngine.generate_ball_commentary(
-            batsman_username=ball.batsman_username,
-            bowler_username=ball.bowler_username,
+            batsman_username=batsman,
+            bowler_username=bowler,
             runs_scored=ball.runs_scored,
             is_wicket=ball.is_wicket,
             prev_runs=prev_runs,
@@ -197,32 +200,16 @@ class ScoreboardFormatter:
         )
 
         if ball.is_wicket:
-            header = "💥 <b>WICKET! OUT!</b> 💥"
-            outcome = f"🔴 Both players selected: <b>{ball.batsman_number}</b>!\nBatsman is <b>OUT</b>!"
+            header = f"💥 <b>OUT!</b> <b>{batsman}</b> ({ball.batsman_number}) = <b>{bowler}</b> ({ball.bowler_number}) | <b>{score_str}</b> ({overs_str} Ov)"
         else:
-            header = "🏏 <b>BALL RESULT</b>"
-            outcome = (
-                f"Batsman selected: <b>{ball.batsman_number}</b>\n"
-                f"Bowler selected: <b>{ball.bowler_number}</b>\n\n"
-                f"✨ Runs scored: <b>+{ball.runs_scored}</b>"
-            )
+            header = f"🏏 <b>{batsman}</b>: <b>{ball.batsman_number}</b> | <b>{bowler}</b>: <b>{ball.bowler_number}</b> ➡️ <b>+{ball.runs_scored}</b> (<b>{score_str}</b> • {overs_str} Ov)"
 
-        text = (
-            f"{header}\n\n"
-            f"🎙️ <i>{comm['commentary']}</i>\n"
-        )
+        text = f"{header}\n🎙️ <i>{comm['commentary']}</i>"
         if comm.get("achievement"):
-            text += f"\n🏅 <b>{comm['achievement']}</b>\n"
+            text += f"\n🏅 <b>{comm['achievement']}</b>"
 
-        text += (
-            f"\n👤 Batsman: {batsman}\n"
-            f"🎯 Bowler: {bowler}\n\n"
-            f"{outcome}\n\n"
-            f"📊 <b>Total Score:</b> {score_str} (Ball {ball.ball_number})\n"
-        )
-
-        if match.target and ball.innings_num == 2:
+        if match.target and ball.innings_num == 2 and not match.status in [MatchStatus.COMPLETED, MatchStatus.TIED]:
             needed = max(0, match.target - current_inn.runs)
-            text += f"🎯 Target: {match.target} (Need {needed} runs to win)\n"
+            text += f"\n🎯 Need <b>{needed}</b> to win"
 
         return text

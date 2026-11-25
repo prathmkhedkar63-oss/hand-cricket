@@ -95,6 +95,7 @@ async def test_solo_force_start_and_countdown_registration():
 
     mock_bot = AsyncMock()
     mock_bot.send_message.return_value = MagicMock(message_id=12345)
+    mock_bot.send_photo.return_value = MagicMock(message_id=12345, photo=None)
     t_id = f"t_solo_force_{uuid.uuid4().hex[:6]}"
     await TournamentService.create_tournament(
         tournament_id=t_id,

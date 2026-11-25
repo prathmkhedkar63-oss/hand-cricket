@@ -47,9 +47,10 @@ async def is_group_admin_or_super(bot: Bot, chat_id: int, user_id: int, username
         return False
 
 @router.message(Command("start"))
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, bot: Bot):
+    from bot.services.media_service import MediaService
     user = message.from_user
-    username = user.username or f"player_{user.id}"
+    username = (user.username or f"player_{user.id}").lstrip("@")
     await StatsService.get_or_create_user(user.id, username, user.first_name)
 
     # In a group chat: Prevent double-start if a tournament/match is already active!
@@ -57,44 +58,37 @@ async def cmd_start(message: Message):
         if await has_active_group_session(message.chat.id):
             await message.answer(
                 "⚠️ <b>A tournament or match is already ongoing in this group!</b>\n"
-                "You cannot start another one until it finishes or a group admin cancels it with /cancel.",
+                "Finish it first or a group admin can cancel it with /cancel.",
                 parse_mode="HTML"
             )
             return
 
         keyboard = get_group_start_keyboard()
         text = (
-            f"🏏 <b>HAND CRICKET TOURNAMENT ARENA</b>\n\n"
-            f"Hello <b>@{username}</b>! Welcome to Hand Cricket in <b>{message.chat.title or 'this group'}</b>.\n\n"
-            f"Choose how you would like to play today:\n"
-            f"• <b>Start Solo:</b> Automated 120s countdown knockout (Numbers 1-6, 60s turn timer)\n"
-            f"• <b>Start Tournament:</b> Host-managed Team A vs Team B tournament\n\n"
-            f"Click a button below to choose:"
+            f"🏏 <b>JPL CRICKET BOT</b>\n\n"
+            f"Welcome <b>{username}</b>! Choose how you would like to play:\n"
+            f"• <b>Start Solo:</b> Automated 120s knockout (Numbers 1–6, 60s timer)\n"
+            f"• <b>Start Tournament:</b> Host-managed Team A vs Team B\n"
+            f"• Or type /challenge_bot for an instant 1v1 vs Bot!"
         )
-        await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+        await MediaService.send_with_image(bot, message.chat.id, "welcome", text, reply_markup=keyboard)
         return
 
     # In private chat: Welcome message and command overview
     text = (
-        f"🏏 <b>WELCOME TO HAND CRICKET BOT!</b>\n\n"
-        f"Hello, <b>@{username}</b>! You are registered and ready to play.\n\n"
+        f"🏏 <b>WELCOME TO JPL CRICKET BOT!</b>\n\n"
+        f"Hello, <b>{username}</b>! You are registered and ready to play.\n\n"
         f"🎮 <b>HOW TO PLAY:</b>\n"
-        f"• <b>Bowler</b> enters a number (0-6) <i>privately</i> in this bot's chat.\n"
-        f"• <b>Batsman</b> enters a number (0-6) <i>in the tournament group</i>.\n"
-        f"• If numbers match ➡️ Batsman is <b>OUT!</b>\n"
-        f"• If numbers differ ➡️ Batsman scores their chosen runs!\n\n"
+        f"• <b>Bowler</b> types a number privately here in Bot DM.\n"
+        f"• <b>Batsman</b> types a number in the group (or here in 1v1 DM).\n"
+        f"• Match numbers ➡️ <b>OUT!</b> Differ ➡️ Batsman scores runs!\n\n"
         f"📌 <b>COMMANDS:</b>\n"
-        f"• /profile - View your profile\n"
-        f"• /stats - Your cricket career statistics\n"
-        f"• /history - Your recent match results\n"
-        f"• /leaderboard - Global rankings\n"
-        f"• /tournaments - Explore active tournaments\n"
-        f"• /mytournaments - View your joined tournaments\n"
-        f"• /rules - Detailed game & tournament rules\n"
-        f"• /help - Help guide\n\n"
-        f"💡 <i>Add this bot to any group and type /start to launch tournaments!</i>"
+        f"• /challenge_bot - Play 1v1 vs Smart Bot\n"
+        f"• /profile | /stats | /history\n"
+        f"• /leaderboard | /tournaments | /rules\n"
+        f"• /help | /about"
     )
-    await message.answer(text, parse_mode="HTML")
+    await MediaService.send_with_image(bot, message.chat.id, "welcome", text)
 
 # Group Start Menu Callbacks
 @router.callback_query(F.data == "menu:start_solo")
@@ -163,17 +157,17 @@ async def on_menu_start_tourn(callback: CallbackQuery, bot: Bot):
     except Exception:
         pass
 
-    # Present [I AM THE HOST] button
+    # Present [I AM THE HOST] button cleanly (no internal IDs, no @ pings)
+    from bot.services.media_service import MediaService
     keyboard = get_claim_host_keyboard(t_id)
     text = (
-        f"🏆 <b>HOST TOURNAMENT CREATED!</b>\n\n"
-        f"🏆 Tournament: <b>{t_name}</b> (ID: <code>{t_id}</code>)\n"
-        f"Mode: <b>Host-Managed (Team A vs Team B)</b>\n"
-        f"Initiated by: @{username}\n\n"
-        f"👉 <i>Who will be the official host for this tournament?</i>\n"
-        f"Click the button below to claim host controls:"
+        f"🏆 <b>JPL CRICKET BOT • HOST TOURNAMENT</b>\n\n"
+        f"🏆 <b>{t_name}</b>\n"
+        f"Mode: <b>Team A vs Team B</b>\n"
+        f"Created by: <b>{username.lstrip('@')}</b>\n\n"
+        f"👉 <i>Tap below to claim host controls:</i>"
     )
-    await callback.message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    await MediaService.send_with_image(bot, chat_id, "match_start", text, reply_markup=keyboard)
 
 @router.callback_query(F.data == "menu:cancel")
 async def on_menu_cancel(callback: CallbackQuery):
@@ -211,14 +205,15 @@ async def cmd_start_solo_direct(message: Message, bot: Bot):
     await SoloTournamentService.start_countdown(t_id, bot, chat_id)
 
 @router.message(Command("start_tournament"))
-async def cmd_start_tournament_direct(message: Message):
+async def cmd_start_tournament_direct(message: Message, bot: Bot):
+    from bot.services.media_service import MediaService
     chat_id = message.chat.id
     if message.chat.type in ["group", "supergroup"] and await has_active_group_session(chat_id):
         await message.answer("⚠️ A tournament or match is already active in this group! Use /cancel first.")
         return
 
     user = message.from_user
-    username = user.username or f"player_{user.id}"
+    username = (user.username or f"player_{user.id}").lstrip("@")
 
     args = message.text.split(maxsplit=1)
     t_id = f"tourn_{uuid.uuid4().hex[:6]}"
@@ -237,12 +232,12 @@ async def cmd_start_tournament_direct(message: Message):
 
     keyboard = get_claim_host_keyboard(t_id)
     text = (
-        f"🏆 <b>HOST TOURNAMENT CREATED!</b>\n\n"
-        f"🏆 Tournament: <b>{t_name}</b> (ID: <code>{t_id}</code>)\n"
-        f"Initiated by: @{username}\n\n"
-        f"👉 <i>Who will be the host?</i> Click below to claim host controls:"
+        f"🏆 <b>JPL CRICKET BOT • HOST TOURNAMENT</b>\n\n"
+        f"🏆 <b>{t_name}</b>\n"
+        f"Created by: <b>{username}</b>\n\n"
+        f"👉 <i>Tap below to claim host controls:</i>"
     )
-    await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    await MediaService.send_with_image(bot, chat_id, "match_start", text, reply_markup=keyboard)
 
 @router.message(Command("cancel"))
 async def cmd_cancel_group_tournament(message: Message, bot: Bot):
@@ -602,10 +597,10 @@ async def cmd_live_score(message: Message):
 @router.message(Command("about"))
 async def cmd_about(message: Message):
     text = (
-        f"ℹ️ <b>ABOUT HAND CRICKET BOT</b>\n\n"
+        f"ℹ️ <b>ABOUT JPL CRICKET BOT</b>\n\n"
         f"🏏 <b>Advanced Hand Cricket & Tournament System</b>\n"
-        f"⚡ Dual-channel live gameplay (Private DM Bowling + Group Batting)\n"
-        f"🏆 Supports Automated Solo Knockouts & Host-Managed Team Leagues\n\n"
+        f"⚡ Private DM Bowling + Group Batting + Smart 1v1 Bot\n"
+        f"🏆 Automated Solo Knockouts & Host-Managed Team Leagues\n\n"
         f"👨‍💻 <b>Made by @prathamesh63</b>"
     )
     await message.answer(text, parse_mode="HTML")
@@ -859,8 +854,8 @@ async def on_tournament_view_participants(callback: CallbackQuery):
         await callback.answer("No registered participants yet.", show_alert=True)
         return
 
-    names = "\n".join([f"{idx}. @{p['username']} (ID: <code>{p['user_id']}</code>)" for idx, p in enumerate(parts, 1)])
-    await callback.message.reply(f"👥 <b>REGISTERED PARTICIPANTS ({len(parts)}):</b>\n\n{names}", parse_mode="HTML")
+    names = "\n".join([f"{idx}. <b>{p['username'].lstrip('@')}</b>" for idx, p in enumerate(parts, 1)])
+    await callback.message.reply(f"👥 <b>JOINED PLAYERS ({len(parts)}):</b>\n\n{names}", parse_mode="HTML")
     await callback.answer()
 
 @router.callback_query(F.data.startswith("tforce:"))

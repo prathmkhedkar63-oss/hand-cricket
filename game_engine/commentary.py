@@ -267,7 +267,7 @@ class CommentaryEngine:
         opener = random.choice(word_set["openers"]).format(**kwargs)
         middle = random.choice(word_set["middles"]).format(**kwargs)
         closer = random.choice(word_set["closers"]).format(**kwargs)
-        return f"{opener} {middle}. {closer}"
+        return f"{opener} {middle}.\n{closer}"
 
     @classmethod
     def generate_ball_commentary(
@@ -282,10 +282,10 @@ class CommentaryEngine:
         recent_runs: Optional[List[int]] = None
     ) -> Dict[str, Optional[str]]:
         """
-        Generates randomized ball commentary plus any milestone or achievement shoutouts.
+        Generates 2-line randomized ball commentary (without @ pings) plus milestone/achievement shoutouts.
         """
-        batsman = f"@{batsman_username}"
-        bowler = f"@{bowler_username}"
+        batsman = f"<b>{batsman_username.lstrip('@')}</b>"
+        bowler = f"<b>{bowler_username.lstrip('@')}</b>"
         ctx = {"batsman": batsman, "bowler": bowler, "balls": ball_number}
 
         key = "wicket" if is_wicket else str(runs_scored)

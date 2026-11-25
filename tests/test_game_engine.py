@@ -116,7 +116,8 @@ def test_commentary_engine_and_achievements():
     for r in range(7):
         res = CommentaryEngine.generate_ball_commentary("virat", "bumrah", r, False, 10, 10 + r, 5)
         assert res["commentary"]
-        assert "@virat" in res["commentary"] or "@bumrah" in res["commentary"]
+        assert "virat" in res["commentary"] or "bumrah" in res["commentary"]
+        assert "@" not in res["commentary"]
 
     # Test wicket & golden duck
     res_gd = CommentaryEngine.generate_ball_commentary("virat", "bumrah", 0, True, 0, 0, 1)
@@ -168,9 +169,23 @@ def test_scoreboard_crr_rrr_chase_meter_and_summary():
     assert "This Over: 2 (2 runs)" in sb
 
     summary = ScoreboardFormatter.format_match_summary(match)
-    assert "MATCH SUMMARY CARD" in summary
+    assert "MATCH SUMMARY" in summary
     assert "Man of the Match:" in summary
     assert "4s:" in summary and "6s:" in summary
+    assert "@" not in summary
+
+def test_2line_commentary_and_lightweight_assets():
+    from game_engine.commentary import CommentaryEngine
+    from bot.services.media_service import MediaService
+
+    res = CommentaryEngine.generate_ball_commentary("virat", "bumrah", 6, False, 10, 16, 4)
+    assert "\n" in res["commentary"]
+    assert len(res["commentary"].splitlines()) == 2
+    assert "@" not in res["commentary"]
+
+    for key, path in MediaService.IMAGES.items():
+        assert path.exists(), f"Missing image asset: {key}"
+        assert path.stat().st_size < 50 * 1024, f"Asset {key} too large"
 
 def test_super_over_on_tie():
     match = GameEngine.create_match("test_so_1", 101, "p1", 202, "p2", max_balls=1, wickets_per_innings=1)

@@ -106,21 +106,24 @@ def format_teams_roster_card(target_t: dict, teams_data: dict) -> str:
     idx = 1
     a_lines = []
     for p in team_a:
-        a_lines.append(f"{idx}. @{p.get('username')}")
+        a_lines.append(f"{idx}. <b>{p.get('username', '').lstrip('@')}</b>")
         idx += 1
     b_lines = []
     for p in team_b:
-        b_lines.append(f"{idx}. @{p.get('username')}")
+        b_lines.append(f"{idx}. <b>{p.get('username', '').lstrip('@')}</b>")
         idx += 1
 
     team_a_lines = "\n".join(a_lines) if a_lines else "None"
     team_b_lines = "\n".join(b_lines) if b_lines else "None"
     overs = target_t.get("max_balls", 36) // 6
+    host_name = (target_t.get("host_username") or "Unassigned").lstrip("@")
+    cap_a_str = f"👑 Captain: <b>{cap_a.lstrip('@')}</b>\n" if cap_a else ""
+    cap_b_str = f"👑 Captain: <b>{cap_b.lstrip('@')}</b>\n" if cap_b else ""
 
     return (
-        f"📊 <b>TOURNAMENT ROSTERS: {target_t['name']}</b>\n"
+        f"📊 <b>JPL CRICKET BOT • {target_t['name']}</b>\n"
         f"⚙️ Overs: <b>{overs} Overs</b> ({target_t.get('max_balls', 36)} balls) | Wickets: 1\n"
-        f"🛡️ Host: @{target_t.get('host_username', 'Unassigned')}\n\n"
+        f"🛡️ Host: <b>{host_name}</b>\n\n"
         f"🔴 <b>TEAM A ({len(team_a)}/11):</b>\n"
         f"{cap_a_str}"
         f"{team_a_lines}\n\n"

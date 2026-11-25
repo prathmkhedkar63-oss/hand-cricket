@@ -30,6 +30,7 @@ COPY game_engine/ ./game_engine/
 COPY bot/ ./bot/
 COPY backend/ ./backend/
 COPY scripts/ ./scripts/
+COPY assets/ ./assets/
 
 # Copy built frontend assets
 COPY --from=frontend-builder /app/admin_panel/dist ./admin_panel/dist

@@ -13,6 +13,7 @@ from game_engine.scoreboard import ScoreboardFormatter
 from game_engine.bot_ai import BotPsychologyEngine
 from bot.keyboards.game_keyboards import get_go_to_dm_keyboard
 from bot.services.stats_service import StatsService
+from bot.services.media_service import MediaService
 
 logger = logging.getLogger("game_service")
 
@@ -254,31 +255,30 @@ class GameService:
             max_number=max_number
         )
 
-        # 1. Post initial Live Scoreboard in the tournament group
-        sb_text = ScoreboardFormatter.format_live_scoreboard(match)
-        try:
-            msg = await bot.send_message(chat_id=group_chat_id, text=sb_text, parse_mode="HTML")
-            match.group_scoreboard_msg_id = msg.message_id
-        except Exception as e:
-            logger.error(f"Failed to send scoreboard message to group {group_chat_id}: {e}")
-
         await cls.save_match(match)
 
-        # 2. Inform chat that match started
+        # 1. Send single clean Match Start banner + caption (no separate Ball-0 scorecard spam)
         try:
-            await bot.send_message(
+            p1_clean = match.player1_username.lstrip("@")
+            p2_clean = match.player2_username.lstrip("@")
+            bat_clean = match.current_batsman_username.lstrip("@")
+            bowl_clean = match.current_bowler_username.lstrip("@")
+            await MediaService.send_with_image(
+                bot=bot,
                 chat_id=group_chat_id,
-                text=(
-                    f"⚔️ <b>MATCH STARTED!</b>\n\n"
-                    f"🏏 Batsman on strike: @{match.current_batsman_username}\n"
-                    f"🎯 Bowler: @{match.current_bowler_username}"
-                ),
-                parse_mode="HTML"
+                image_key="match_start",
+                caption=(
+                    f"⚔️ <b>JPL CRICKET BOT • MATCH STARTED!</b>\n\n"
+                    f"<b>{p1_clean}</b> VS <b>{p2_clean}</b> ({match.round_name})\n"
+                    f"🏏 Batting 1st: <b>{bat_clean}</b>\n"
+                    f"🎯 Bowling 1st: <b>{bowl_clean}</b>\n\n"
+                    f"<i>Use /score anytime to view the live scorecard.</i>"
+                )
             )
         except Exception:
             pass
 
-        # 3. Prompt the first bowler (or auto-bowl if Bot is bowling)
+        # 2. Prompt the first bowler (or auto-bowl if Bot is bowling)
         await cls.prompt_bowler(match, bot)
 
         return match
@@ -446,11 +446,16 @@ class GameService:
         else:
             recent.clear()
 
-        # 1. Announce ball result in group
+        # 1. Announce ball result in group (club with wicket/six image on big moments)
         if match.group_chat_id:
             ball_text = ScoreboardFormatter.format_ball_result(ball, match, recent_runs=recent)
             try:
-                await bot.send_message(chat_id=match.group_chat_id, text=ball_text, parse_mode="HTML")
+                if ball.is_wicket:
+                    await MediaService.send_with_image(bot, match.group_chat_id, "wicket", ball_text)
+                elif ball.runs_scored == 6:
+                    await MediaService.send_with_image(bot, match.group_chat_id, "six", ball_text)
+                else:
+                    await bot.send_message(chat_id=match.group_chat_id, text=ball_text, parse_mode="HTML")
             except Exception as e:
                 logger.error(f"Failed to announce ball result: {e}")
 
@@ -497,7 +502,7 @@ class GameService:
             summary_text = ScoreboardFormatter.format_match_summary(match)
             if match.group_chat_id:
                 try:
-                    await bot.send_message(chat_id=match.group_chat_id, text=summary_text, parse_mode="HTML")
+                    await MediaService.send_with_image(bot, match.group_chat_id, "champion", summary_text)
                 except Exception:
                     pass
 
@@ -577,13 +582,13 @@ class GameService:
                         await db.save("statistics", stats)
 
                     champ_text = (
-                        f"🏆🎉 <b>TOURNAMENT CHAMPION!</b> 🎉🏆\n\n"
+                        f"🏆🎉 <b>JPL CRICKET BOT • TOURNAMENT CHAMPION!</b> 🎉🏆\n\n"
                         f"Tournament: <b>{t['name']}</b>\n"
-                        f"👑 Champion: <b>@{champ['username']}</b>\n\n"
-                        f"Congratulations to the champion on winning the tournament!"
+                        f"👑 Champion: <b>{champ['username'].lstrip('@')}</b>\n\n"
+                        f"Congratulations on winning the championship!"
                     )
                     try:
-                        await bot.send_message(chat_id=t["group_chat_id"], text=champ_text, parse_mode="HTML")
+                        await MediaService.send_with_image(bot, t["group_chat_id"], "champion", champ_text)
                     except Exception:
                         pass
                 else:

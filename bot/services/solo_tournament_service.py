@@ -46,28 +46,30 @@ class SoloTournamentService:
         if tournament_id in cls._running_countdowns:
             cls._running_countdowns[tournament_id].cancel()
 
-        # Announce start of countdown with joined players & IDs + registration/force-start buttons
+        # Announce start of countdown cleanly (no internal IDs, no @ pings)
         player_lines = "\n".join(
-            [f"{i}. @{p['username']} (ID: <code>{p['user_id']}</code>)" for i, p in enumerate(participants, 1)]
+            [f"{i}. <b>{p['username'].lstrip('@')}</b>" for i, p in enumerate(participants, 1)]
         ) or "None yet"
         announcement = (
-            f"🏏 <b>SOLO TOURNAMENT STARTING!</b>\n\n"
-            f"🏆 <b>{t['name']}</b> (ID: <code>{tournament_id}</code>)\n"
+            f"🏏 <b>JPL CRICKET BOT • SOLO TOURNAMENT</b>\n\n"
+            f"🏆 <b>{t['name']}</b>\n"
             f"🔢 Numbers: <b>1 to 6</b> | ⏱️ Turn Timer: <b>60s</b>\n"
-            f"👥 Registered Participants: <b>{len(participants)}</b>\n"
+            f"👥 Joined Players (<b>{len(participants)}</b>):\n"
             f"{player_lines}\n\n"
-            f"Tournament starts in:\n"
-            f"⏳ <b>02:00</b>"
+            f"⏳ Starts in: <b>02:00</b>"
         )
         try:
-            msg = await bot_instance.send_message(
+            from bot.services.media_service import MediaService
+            msg = await MediaService.send_with_image(
+                bot=bot_instance,
                 chat_id=group_chat_id,
-                text=announcement,
-                reply_markup=get_tournament_register_keyboard(tournament_id),
-                parse_mode="HTML"
+                image_key="match_start",
+                caption=announcement,
+                reply_markup=get_tournament_register_keyboard(tournament_id)
             )
-            t["countdown_message_id"] = msg.message_id
-            await db.save("tournaments", tournaments)
+            if msg and isinstance(getattr(msg, "message_id", None), int):
+                t["countdown_message_id"] = msg.message_id
+                await db.save("tournaments", tournaments)
         except Exception as e:
             logger.error(f"Failed to send countdown message: {e}")
 
@@ -198,10 +200,10 @@ class SoloTournamentService:
                         if m in thirty_sec_milestones:
                             participants = await TournamentService.get_tournament_participants(tournament_id)
                             player_lines = "\n".join(
-                                [f"{i}. @{p['username']} (ID: <code>{p['user_id']}</code>)" for i, p in enumerate(participants, 1)]
+                                [f"{i}. <b>{p['username'].lstrip('@')}</b>" for i, p in enumerate(participants, 1)]
                             ) or "None yet"
                             text = (
-                                f"⏳ <b>COUNTDOWN UPDATE: {time_str} REMAINING!</b>\n\n"
+                                f"⏳ <b>{time_str} REMAINING!</b>\n\n"
                                 f"🏆 <b>{t['name']}</b>\n"
                                 f"👥 <b>Joined Players ({len(participants)}):</b>\n"
                                 f"{player_lines}"
