@@ -8,7 +8,7 @@ from game_engine.models import InningsState, MatchState
 
 @lru_cache(maxsize=16)
 def _load_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
-    """Load a crisp TrueType font if available, falling back to Pillow default."""
+    """Load a crisp TrueType font if available, falling back safely to Pillow default."""
     candidates = (
         ["arialbd.ttf", "DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
         if bold
@@ -19,7 +19,34 @@ def _load_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
             return ImageFont.truetype(path, size)
         except Exception:
             continue
-    return ImageFont.load_default()
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def _draw_text(
+    draw: ImageDraw.ImageDraw,
+    xy: Tuple[int, int],
+    text: str,
+    font: ImageFont.ImageFont,
+    fill: Tuple[int, int, int],
+    anchor: Optional[str] = None
+):
+    """Draw text with safe alignment that works on both TrueType and bitmap fonts."""
+    x, y = xy
+    if anchor in ("ra", "mm"):
+        try:
+            bbox = draw.textbbox((0, 0), text, font=font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            tw, th = len(text) * 6, 12
+        if anchor == "ra":
+            x = x - tw
+        elif anchor == "mm":
+            x = x - tw // 2
+            y = y - th // 2
+    draw.text((x, y), text, font=font, fill=fill)
 
 
 def _format_overs(balls: int) -> str:
@@ -151,7 +178,7 @@ class ScoreboardImageGenerator:
         draw.rectangle([0, 54, W, 57], fill=(235, 168, 28))
         draw.text((28, 17), "JPL CRICKET BOT", font=f_brand, fill=(235, 168, 28))
         header_right = title_override or f"END OF OVER {over_num} • INN {innings.innings_num}"
-        draw.text((W - 28, 17), header_right, font=f_brand, fill=(220, 230, 245), anchor="ra")
+        _draw_text(draw, (W - 28, 17), header_right, font=f_brand, fill=(220, 230, 245), anchor="ra")
 
         # Main score card
         draw.rounded_rectangle([24, 74, W - 24, 198], radius=14, fill=(22, 34, 64), outline=(54, 78, 128), width=2)
@@ -163,8 +190,8 @@ class ScoreboardImageGenerator:
         score_str = f"{innings.runs}/{innings.wickets}"
         overs_str = f"({_format_overs(innings.balls)} Ov)"
         crr = (innings.runs / (innings.balls / 6.0)) if innings.balls > 0 else 0.0
-        draw.text((W - 44, 86), score_str, font=f_score, fill=(255, 215, 70), anchor="ra")
-        draw.text((W - 44, 142), f"{overs_str}  •  CRR {crr:.2f}", font=f_sub, fill=(195, 212, 238), anchor="ra")
+        _draw_text(draw, (W - 44, 86), score_str, font=f_score, fill=(255, 215, 70), anchor="ra")
+        _draw_text(draw, (W - 44, 142), f"{overs_str}  •  CRR {crr:.2f}", font=f_sub, fill=(195, 212, 238), anchor="ra")
 
         # Chase info if 2nd innings
         if innings.innings_num == 2 and innings.target:
@@ -185,7 +212,7 @@ class ScoreboardImageGenerator:
             cy = 225
             bg, fg = _pill_color(token)
             draw.ellipse([cx - 20, cy - 20, cx + 20, cy + 20], fill=bg)
-            draw.text((cx, cy), str(token).upper(), font=f_bold, fill=fg, anchor="mm")
+            _draw_text(draw, (cx, cy), str(token).upper(), font=f_bold, fill=fg, anchor="mm")
 
         # Best performance / Over highlight box
         hl_title, hl_detail = _over_highlight(innings)
@@ -213,7 +240,7 @@ class ScoreboardImageGenerator:
         draw.rectangle([0, 54, W, 57], fill=(235, 168, 28))
         draw.text((28, 17), "JPL CRICKET BOT", font=f_brand, fill=(235, 168, 28))
         label = "SUPER OVER SCORECARD" if match.is_super_over else f"FINAL SCORECARD • {match.round_name.upper()}"
-        draw.text((W - 28, 17), label, font=f_brand, fill=(220, 230, 245), anchor="ra")
+        _draw_text(draw, (W - 28, 17), label, font=f_brand, fill=(220, 230, 245), anchor="ra")
 
         # Two innings side-by-side cards
         boxes = [
@@ -236,7 +263,7 @@ class ScoreboardImageGenerator:
         # Result banner
         draw.rounded_rectangle([24, 256, W - 24, 326], radius=12, fill=(24, 68, 48), outline=(54, 196, 120), width=2)
         result_line = match.result_text or (f"🏆 {_clean_name(match.winner_username)} won!" if match.winner_username else "🤝 Match Tied!")
-        draw.text((W // 2, 291), result_line[:56], font=f_title, fill=(255, 255, 255), anchor="mm")
+        _draw_text(draw, (W // 2, 291), result_line[:56], font=f_title, fill=(255, 255, 255), anchor="mm")
 
         # Best Performance / MVP box
         mvp_title, mvp_line = _compute_best_performance(match)

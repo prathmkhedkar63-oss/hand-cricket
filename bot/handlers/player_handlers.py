@@ -597,15 +597,18 @@ async def cmd_live_score(message: Message, bot: Bot):
     sb = ScoreboardFormatter.format_live_scoreboard(target_match)
     inn_obj = target_match.first_innings if target_match.current_innings == 1 else target_match.second_innings
     if inn_obj:
-        from game_engine.scoreboard_image import ScoreboardImageGenerator
-        img_bytes = ScoreboardImageGenerator.render_over_card(
-            target_match,
-            inn_obj,
-            title_override=f"LIVE SCORECARD • INN {inn_obj.innings_num}"
-        )
-        await MediaService.send_generated_image(bot, chat_id, img_bytes, "live_scorecard.jpg", sb)
-    else:
-        await message.answer(sb, parse_mode="HTML")
+        try:
+            from game_engine.scoreboard_image import ScoreboardImageGenerator
+            img_bytes = ScoreboardImageGenerator.render_over_card(
+                target_match,
+                inn_obj,
+                title_override=f"LIVE SCORECARD • INN {inn_obj.innings_num}"
+            )
+            await MediaService.send_generated_image(bot, chat_id, img_bytes, "live_scorecard.jpg", sb)
+            return
+        except Exception:
+            pass
+    await message.answer(sb, parse_mode="HTML")
 
 @router.message(Command("about"))
 async def cmd_about(message: Message):

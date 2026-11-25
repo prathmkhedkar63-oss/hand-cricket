@@ -333,6 +333,13 @@ async def test_dynamic_scoreboard_images_and_db_auto_cleanup():
     )
     assert live_bytes.startswith(b"\xff\xd8\xff")
 
+    # Verify bitmap font fallback never crashes on anchor alignment
+    from unittest.mock import patch
+    from PIL import ImageFont
+    with patch("game_engine.scoreboard_image._load_font", return_value=ImageFont.load_default()):
+        bm_over = ScoreboardImageGenerator.render_over_card(match, match.first_innings)
+        assert bm_over.startswith(b"\xff\xd8\xff")
+
     # Finish 1st & 2nd innings
     GameEngine.record_bowler_choice(match, 2, 3)
     GameEngine.record_batsman_choice(match, 1, 3)

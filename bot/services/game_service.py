@@ -545,8 +545,12 @@ class GameService:
                     if new_sb and isinstance(getattr(new_sb, "message_id", None), int):
                         match.group_scoreboard_msg_id = new_sb.message_id
                         await cls.save_match(match)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(f"Over scoreboard error, falling back to text: {e}")
+                    try:
+                        await bot.send_message(chat_id=match.group_chat_id, text=sb_text, parse_mode="HTML")
+                    except Exception:
+                        pass
 
         # 3. Auto Super Over on Tie!
         if match.status == MatchStatus.TIED and not match.is_super_over:
@@ -587,8 +591,12 @@ class GameService:
                     await MediaService.send_generated_image(
                         bot, match.group_chat_id, card_bytes, "match_scorecard.jpg", summary_text
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(f"Match scorecard error, falling back to text: {e}")
+                    try:
+                        await bot.send_message(chat_id=match.group_chat_id, text=summary_text, parse_mode="HTML")
+                    except Exception:
+                        pass
 
             # If this is part of a solo tournament, progress tournament automatically!
             if match.tournament_id:
