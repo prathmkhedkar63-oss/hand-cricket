@@ -493,6 +493,12 @@ class GameService:
                     await MediaService.send_video_or_animation(bot, match.group_chat_id, "6", ball_text)
                 elif ball.runs_scored == 4:
                     await MediaService.send_video_or_animation(bot, match.group_chat_id, "4", ball_text)
+                elif ball.runs_scored == 3:
+                    await MediaService.send_video_or_animation(bot, match.group_chat_id, "3", ball_text)
+                elif ball.runs_scored == 2:
+                    await MediaService.send_video_or_animation(bot, match.group_chat_id, "2", ball_text)
+                elif ball.runs_scored == 1:
+                    await MediaService.send_video_or_animation(bot, match.group_chat_id, "1", ball_text)
                 elif ball.runs_scored == 0:
                     await MediaService.send_video_or_animation(bot, match.group_chat_id, "dot", ball_text)
                 else:

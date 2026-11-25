@@ -29,8 +29,11 @@ class MediaService:
 
     VIDEOS: Dict[str, List[str]] = {
         "on_ready": ["on ready.mp4"],
-        "dot": ["dot.mp4"],
-        "4": ["4.mp4"],
+        "dot": ["dot.mp4", "0 ro 1.mp4"],
+        "1": ["0 ro 1.mp4"],
+        "2": ["2.mp4"],
+        "3": ["3.mp4"],
+        "4": ["4.mp4", "4(1).mp4"],
         "6": ["6.mp4", "6(1).mp4"],
         "out": ["out.mp4", "out(1).mp4"],
         "50": ["50.mp4"],
