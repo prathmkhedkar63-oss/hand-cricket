@@ -71,6 +71,22 @@ class GameService:
         cls._bot_last_shot.pop(match_id, None)
 
     @classmethod
+    async def recover_active_matches(cls):
+        """Reloads any IN_PROGRESS matches from DB into active_matches after a restart."""
+        matches_db = await db.load("matches")
+        if not isinstance(matches_db, dict):
+            return
+        for mid, m_data in matches_db.items():
+            if mid in cls.active_matches:
+                continue
+            try:
+                match = MatchState(**m_data)
+                if match.status == MatchStatus.IN_PROGRESS:
+                    cls.active_matches[mid] = match
+            except Exception:
+                continue
+
+    @classmethod
     async def cleanup_match_db(cls, match_id: str):
         """Auto-deletes ball_history records for a completed match so DB stays lean."""
         cls._pending_balls = [b for b in cls._pending_balls if b.get("match_id") != match_id]

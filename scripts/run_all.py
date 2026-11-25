@@ -36,7 +36,9 @@ async def run_bot(bot: Bot, dp):
     from bot.bot_instance import setup_bot_commands
     await setup_bot_commands(bot)
 
-    # Recover any solo tournament countdowns interrupted by restart
+    # Recover any in-progress matches & solo tournament countdowns interrupted by restart
+    from bot.services.game_service import GameService
+    await GameService.recover_active_matches()
     await SoloTournamentService.recover_active_countdowns(bot)
     logger.info("Starting Telegram Bot Polling...")
     await dp.start_polling(bot)

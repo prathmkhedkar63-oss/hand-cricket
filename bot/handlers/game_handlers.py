@@ -11,6 +11,10 @@ async def on_private_typed_input(message: Message, bot: Bot):
     user_id = message.from_user.id
     raw = message.text.strip()
 
+    # Ensure active_matches is hydrated if bot restarted mid-match
+    if not GameService.active_matches:
+        await GameService.recover_active_matches()
+
     # Check if user is active bowler OR active DM batsman in a /challenge_bot match
     bowl_match = None
     dm_bat_match = None
@@ -73,6 +77,10 @@ async def on_group_typed_input(message: Message, bot: Bot):
     user_id = message.from_user.id
     chat_id = message.chat.id
     raw = message.text.strip()
+
+    # Ensure active_matches is hydrated if bot restarted mid-match
+    if not GameService.active_matches:
+        await GameService.recover_active_matches()
 
     # Find active match in this group where user is the active batsman waiting to play
     target_match = None
