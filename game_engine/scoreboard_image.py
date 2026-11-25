@@ -133,7 +133,7 @@ class ScoreboardImageGenerator:
     """Renders lightweight in-memory JPEG scoreboards for Over End and Match End."""
 
     @staticmethod
-    def render_over_card(match: MatchState, innings: InningsState) -> bytes:
+    def render_over_card(match: MatchState, innings: InningsState, title_override: Optional[str] = None) -> bytes:
         W, H = 800, 390
         img = _draw_gradient_bg(W, H)
         draw = ImageDraw.Draw(img)
@@ -150,7 +150,7 @@ class ScoreboardImageGenerator:
         draw.rectangle([0, 0, W, 56], fill=(20, 32, 62))
         draw.rectangle([0, 54, W, 57], fill=(235, 168, 28))
         draw.text((28, 17), "JPL CRICKET BOT", font=f_brand, fill=(235, 168, 28))
-        header_right = f"END OF OVER {over_num} • INN {innings.innings_num}"
+        header_right = title_override or f"END OF OVER {over_num} • INN {innings.innings_num}"
         draw.text((W - 28, 17), header_right, font=f_brand, fill=(220, 230, 245), anchor="ra")
 
         # Main score card

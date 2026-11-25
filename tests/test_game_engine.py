@@ -328,6 +328,11 @@ async def test_dynamic_scoreboard_images_and_db_auto_cleanup():
     assert over_bytes.startswith(b"\xff\xd8\xff")
     assert len(over_bytes) < 65 * 1024
 
+    live_bytes = ScoreboardImageGenerator.render_over_card(
+        match, match.first_innings, title_override="LIVE SCORECARD • INN 1"
+    )
+    assert live_bytes.startswith(b"\xff\xd8\xff")
+
     # Finish 1st & 2nd innings
     GameEngine.record_bowler_choice(match, 2, 3)
     GameEngine.record_batsman_choice(match, 1, 3)

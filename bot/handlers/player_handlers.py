@@ -576,10 +576,13 @@ async def cmd_challenge_bot(message: Message, bot: Bot):
     )
 
 @router.message(Command("score"))
-async def cmd_live_score(message: Message):
+async def cmd_live_score(message: Message, bot: Bot):
     """
-    Anyone in the group can view the current live scorecard on demand via /score.
+    Anyone in the group can view the current live scorecard image + summary on demand via /score.
     """
+    if not GameService.active_matches:
+        await GameService.recover_active_matches()
+
     chat_id = message.chat.id
     target_match = None
     for m in GameService.active_matches.values():
@@ -592,7 +595,17 @@ async def cmd_live_score(message: Message):
         return
 
     sb = ScoreboardFormatter.format_live_scoreboard(target_match)
-    await message.answer(sb, parse_mode="HTML")
+    inn_obj = target_match.first_innings if target_match.current_innings == 1 else target_match.second_innings
+    if inn_obj:
+        from game_engine.scoreboard_image import ScoreboardImageGenerator
+        img_bytes = ScoreboardImageGenerator.render_over_card(
+            target_match,
+            inn_obj,
+            title_override=f"LIVE SCORECARD • INN {inn_obj.innings_num}"
+        )
+        await MediaService.send_generated_image(bot, chat_id, img_bytes, "live_scorecard.jpg", sb)
+    else:
+        await message.answer(sb, parse_mode="HTML")
 
 @router.message(Command("about"))
 async def cmd_about(message: Message):
