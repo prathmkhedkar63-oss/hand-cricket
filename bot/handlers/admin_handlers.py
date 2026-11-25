@@ -9,7 +9,7 @@ from bot.services.tournament_service import TournamentService
 from bot.services.solo_tournament_service import SoloTournamentService
 from bot.services.host_tournament_service import HostTournamentService
 from bot.keyboards.admin_keyboards import get_admin_dashboard_keyboard
-from bot.middlewares.auth_middleware import is_admin_user
+from bot.middlewares.auth_middleware import is_admin_user, is_super_admin
 
 router = Router(name="admin_handlers")
 
@@ -115,10 +115,90 @@ async def cmd_revoke_admin(message: Message):
     })
     await message.answer(f"🚫 @{target_uname} admin rights revoked.")
 
+
+@router.message(Command("messege_push", "message_push"))
+async def cmd_messege_push(message: Message, bot: Bot):
+    if not await is_admin(message.from_user.id, message.from_user.username):
+        await message.answer("🚫 Access denied. Only Bot Admins can push broadcast messages.")
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    push_text = parts[1].strip() if len(parts) > 1 else ""
+    reply_msg = message.reply_to_message
+
+    if not push_text and not reply_msg:
+        await message.answer(
+            "ℹ️ <b>Usage:</b>\n"
+            "• <code>/messege_push Your message here</code>\n"
+            "• Or reply to any text/photo/video with <code>/messege_push</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    users = await db.load("users")
+    tournaments = await db.load("tournaments")
+    matches = await db.load("matches")
+    sys_settings = await db.load("settings")
+
+    dm_ids = {
+        int(uid) for uid in users.keys()
+        if str(uid).lstrip("-").isdigit() and int(uid) > 0
+    }
+    group_ids = set()
+    for src in (tournaments, matches):
+        if isinstance(src, dict):
+            for rec in src.values():
+                if isinstance(rec, dict):
+                    gid = rec.get("group_chat_id")
+                    if isinstance(gid, int) and gid < 0:
+                        group_ids.add(gid)
+    for gid in sys_settings.get("known_groups", []):
+        if isinstance(gid, int) and gid < 0:
+            group_ids.add(gid)
+
+    dm_sent = 0
+    grp_sent = 0
+    failed = 0
+
+    for chat_id in list(dm_ids) + list(group_ids):
+        try:
+            if reply_msg and not push_text:
+                await bot.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=message.chat.id,
+                    message_id=reply_msg.message_id
+                )
+            else:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=f"📢 <b>JPL CRICKET BOT</b>\n━━━━━━━━━━━━━━━━━━━━\n{push_text}",
+                    parse_mode="HTML"
+                )
+            if chat_id > 0:
+                dm_sent += 1
+            else:
+                grp_sent += 1
+        except Exception:
+            failed += 1
+
+    await db.append("audit_logs", {
+        "actor_id": message.from_user.id,
+        "actor": message.from_user.username or str(message.from_user.id),
+        "action": "messege_push",
+        "target": f"dms={dm_sent},groups={grp_sent},failed={failed}",
+        "timestamp": time.time()
+    })
+    await message.answer(
+        f"📢 <b>MESSAGE PUSH COMPLETE!</b>\n"
+        f"✅ Delivered: <b>{dm_sent + grp_sent}</b> (👤 {dm_sent} DMs • 👥 {grp_sent} Groups)\n"
+        f"❌ Failed: <b>{failed}</b>",
+        parse_mode="HTML"
+    )
+
 @router.message(Command("start_bot"))
 async def cmd_start_bot(message: Message):
-    if not await is_admin(message.from_user.id, message.from_user.username):
-        await message.answer("🚫 Access denied. Only Bot Admins can start the bot.")
+    if not is_super_admin(message.from_user.id, message.from_user.username):
+        await message.answer("🚫 Access denied. Only the Bot Owner can start the bot.")
         return
 
     sys_settings = await db.load("settings")
@@ -136,8 +216,8 @@ async def cmd_start_bot(message: Message):
 
 @router.message(Command("stop_bot"))
 async def cmd_stop_bot(message: Message, bot: Bot):
-    if not await is_admin(message.from_user.id, message.from_user.username):
-        await message.answer("🚫 Access denied. Only Bot Admins can stop the bot.")
+    if not is_super_admin(message.from_user.id, message.from_user.username):
+        await message.answer("🚫 Access denied. Only the Bot Owner can stop the bot.")
         return
 
     sys_settings = await db.load("settings")

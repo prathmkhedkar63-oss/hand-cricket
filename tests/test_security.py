@@ -104,6 +104,20 @@ async def test_administrator_and_revoke_admin():
     assert "@new_mod_user is admin now" in grant_msg.answer.call_args[0][0]
     assert await is_admin_user(888002, "new_mod_user")
 
+    # Promoted admin CANNOT stop or start the bot (only Bot Owner can)
+    from bot.handlers.admin_handlers import cmd_stop_bot, cmd_start_bot
+    mod_stop = MagicMock()
+    mod_stop.from_user = MagicMock(id=888002, username="new_mod_user")
+    mod_stop.answer = AsyncMock()
+    await cmd_stop_bot(mod_stop, MagicMock())
+    assert "Only the Bot Owner" in mod_stop.answer.call_args[0][0]
+
+    mod_start = MagicMock()
+    mod_start.from_user = MagicMock(id=888002, username="new_mod_user")
+    mod_start.answer = AsyncMock()
+    await cmd_start_bot(mod_start)
+    assert "Only the Bot Owner" in mod_start.answer.call_args[0][0]
+
     # Revoke admin rights
     revoke_msg = MagicMock()
     revoke_msg.from_user = MagicMock(id=999001, username=settings.SUPER_ADMIN_USERNAME.lstrip("@"))
@@ -115,3 +129,26 @@ async def test_administrator_and_revoke_admin():
     revoke_msg.answer.assert_awaited_once()
     assert "admin rights revoked" in revoke_msg.answer.call_args[0][0]
     assert not await is_admin_user(888002, "new_mod_user")
+
+
+@pytest.mark.asyncio
+async def test_messege_push_broadcast():
+    from unittest.mock import AsyncMock, MagicMock
+    from bot.handlers.admin_handlers import cmd_messege_push
+    from config.settings import settings
+    from database.json_manager import db
+
+    users = await db.load("users")
+    users["70001"] = {"user_id": 70001, "username": "dm_user_1"}
+    await db.save("users", users)
+
+    mock_bot = AsyncMock()
+    push_msg = MagicMock()
+    push_msg.from_user = MagicMock(id=999001, username=settings.SUPER_ADMIN_USERNAME.lstrip("@"))
+    push_msg.reply_to_message = None
+    push_msg.text = "/messege_push Tournament tonight at 9 PM!"
+    push_msg.answer = AsyncMock()
+
+    await cmd_messege_push(push_msg, mock_bot)
+    assert mock_bot.send_message.await_count >= 1
+    assert "MESSAGE PUSH COMPLETE" in push_msg.answer.call_args[0][0]

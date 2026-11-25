@@ -46,6 +46,7 @@ async def setup_bot_commands(bot: Bot):
         BotCommand(command="stop_bot", description="Admin: Stop bot for maintenance"),
         BotCommand(command="administrator", description="Admin: Grant bot admin rights"),
         BotCommand(command="revoke_admin", description="Admin: Revoke bot admin rights"),
+        BotCommand(command="messege_push", description="Admin: Broadcast message to DMs & groups"),
     ]
 
     # Group chat commands
@@ -79,6 +80,7 @@ async def setup_bot_commands(bot: Bot):
         BotCommand(command="stop_bot", description="Admin: Stop bot"),
         BotCommand(command="administrator", description="Admin: Make user bot admin"),
         BotCommand(command="revoke_admin", description="Admin: Revoke bot admin"),
+        BotCommand(command="messege_push", description="Admin: Broadcast message to DMs & groups"),
     ]
 
     # Default fallback commands

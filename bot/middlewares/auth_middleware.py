@@ -6,6 +6,15 @@ from bot.services.stats_service import StatsService
 from config.settings import settings
 from database.json_manager import db
 
+def is_super_admin(user_id: int, username: Optional[str] = None) -> bool:
+    """Checks if the user is the Bot Owner (Super Admin) via ID or SUPER_ADMIN_USERNAME."""
+    if settings.SUPER_ADMIN_ID and user_id == settings.SUPER_ADMIN_ID:
+        return True
+    clean_uname = (username or "").lstrip("@").lower()
+    super_uname = settings.SUPER_ADMIN_USERNAME.lstrip("@").lower()
+    return bool(clean_uname and super_uname and clean_uname == super_uname)
+
+
 async def is_admin_user(user_id: int, username: Optional[str] = None) -> bool:
     """
     Checks if the user is a Super Admin via numeric ID, configured username (@prathamesh63), or admins.json.
@@ -73,10 +82,10 @@ class AuthMiddleware(BaseMiddleware):
                     await event.answer("🚫 Your account has been banned from this bot.")
                 return
 
-            # Enforce bot_enabled state (admins are always allowed so they can run /start_bot)
+            # Enforce bot_enabled state (only the Bot Owner can bypass to run /start_bot)
             sys_settings = await db.load("settings")
             if not sys_settings.get("bot_enabled", True):
-                if not await is_admin_user(user.id, user.username):
+                if not is_super_admin(user.id, user.username):
                     if isinstance(event, CallbackQuery):
                         await event.answer("🛑 The bot is currently stopped by an administrator.", show_alert=True)
                     elif isinstance(event, Message):

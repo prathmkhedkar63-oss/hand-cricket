@@ -17,6 +17,10 @@ from game_engine.scoreboard import ScoreboardFormatter
 from bot.keyboards.game_keyboards import (
     get_tournament_register_keyboard,
     get_group_start_keyboard,
+    get_dm_start_keyboard,
+    get_rulebook_keyboard,
+    get_profile_keyboard,
+    get_leaderboard_keyboard,
     get_claim_host_keyboard,
     get_toss_call_keyboard,
     get_toss_choice_keyboard
@@ -26,6 +30,71 @@ router = Router(name="player_handlers")
 
 # Bounded in-memory toss state: toss_id -> dict
 _active_tosses: dict = {}
+
+
+async def _show_or_edit(callback: CallbackQuery, text: str, reply_markup=None):
+    """Edits the current text message in-place, or sends a new message if coming from a photo card."""
+    try:
+        if callback.message and callback.message.text is not None:
+            await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+            return
+    except Exception:
+        pass
+    if callback.message:
+        await callback.message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
+
+
+RULEBOOK_PAGES = {
+    "basics": (
+        "📖 <b>JPL CRICKET BOT • RULE BOOK (1/5)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🏏 <b>BASICS & SCORING</b>\n\n"
+        "• <b>Numbers:</b> Solo Cup uses <b>1–6</b> • Host/1v1 uses <b>0–6</b>\n"
+        "• <b>WICKET (OUT):</b> Bowler & Batsman pick the <b>same number</b>\n"
+        "• <b>RUNS:</b> Numbers differ ➡️ Batsman scores their chosen number\n"
+        "• <b>2 Innings:</b> Both sides bat & bowl once\n"
+        "• <b>Target:</b> 2nd Innings chases <code>1st Innings + 1</code>"
+    ),
+    "ball": (
+        "📖 <b>JPL CRICKET BOT • RULE BOOK (2/5)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🎯 <b>HOW EVERY BALL WORKS</b>\n\n"
+        "1️⃣ <b>Bowler</b> types a secret number privately in <b>Bot DM</b>\n"
+        "2️⃣ <b>Batsman</b> types their shot directly in the <b>Group Chat</b>\n"
+        "3️⃣ Bot reveals both numbers with an <b>MP4 clip</b> + <b>2-line commentary</b>\n"
+        "4️⃣ Every <b>6 balls</b>, a custom <b>Over Scorecard Image</b> is posted\n"
+        "5️⃣ At <b>Match End</b>, a <b>Final Scorecard + Best Performance</b> card is posted"
+    ),
+    "tourn": (
+        "📖 <b>JPL CRICKET BOT • RULE BOOK (3/5)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🏆 <b>TOURNAMENT MODES</b>\n\n"
+        "⚡ <b>Solo Knockout Cup (/start_solo):</b>\n"
+        "• 120s registration countdown with auto-bracket & live rounds\n\n"
+        "🏟️ <b>Host Team League (/start_tournament):</b>\n"
+        "• Claim host, build <b>Team A vs Team B</b> (up to 11 each)\n"
+        "• Commands: <code>/add_a</code>, <code>/add_b</code>, <code>/cap_a</code>, <code>/cap_b</code>, <code>/overs</code>, <code>/toss</code>, <code>/start_match</code>"
+    ),
+    "timers": (
+        "📖 <b>JPL CRICKET BOT • RULE BOOK (4/5)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "⏱️ <b>TIMERS, PENALTIES & SUPER OVER</b>\n\n"
+        "• <b>60s Turn Timer:</b> Every bowler & batsman has 60 seconds per ball\n"
+        "• <b>Bowler Timeout:</b> +6 runs to batsman + 1 warning\n"
+        "• <b>Batsman Timeout:</b> -6 runs penalty + 1 warning\n"
+        "• <b>3 Warnings:</b> Automatic dismissal (or Host appoints replacement)\n"
+        "• <b>Tie Breaker:</b> Equal scores trigger an instant <b>1-Over Super Over</b>!"
+    ),
+    "ai": (
+        "📖 <b>JPL CRICKET BOT • RULE BOOK (5/5)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🤖 <b>SMART BOT & FAIR PLAY</b>\n\n"
+        "• <b>/challenge_bot:</b> Play 1v1 anytime in Group or Bot DM\n"
+        "• <b>Adaptive AI:</b> Tracks your patterns without cheating—bowls first in secret\n"
+        "• <b>/score:</b> View a live generated scorecard image anytime\n"
+        "• <b>/cancel:</b> Group admins can cancel a stuck match or tournament"
+    ),
+}
 
 async def has_active_group_session(chat_id: int) -> bool:
     tournaments = await db.load("tournaments")
@@ -65,30 +134,26 @@ async def cmd_start(message: Message, bot: Bot):
 
         keyboard = get_group_start_keyboard()
         text = (
-            f"🏏 <b>JPL CRICKET BOT</b>\n\n"
-            f"Welcome <b>{username}</b>! Choose how you would like to play:\n"
-            f"• <b>Start Solo:</b> Automated 120s knockout (Numbers 1–6, 60s timer)\n"
-            f"• <b>Start Tournament:</b> Host-managed Team A vs Team B\n"
-            f"• Or type /challenge_bot for an instant 1v1 vs Bot!"
+            f"🏏 <b>JPL CRICKET BOT</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Welcome <b>{username}</b>! Pick a mode below:\n\n"
+            f"⚡ <b>Solo Cup:</b> 120s automated knockout (1–6)\n"
+            f"🏟️ <b>Host Tournament:</b> Team A vs Team B\n"
+            f"🤖 <b>Challenge Bot:</b> Instant 1v1 vs Smart AI"
         )
         await MediaService.send_with_image(bot, message.chat.id, "welcome", text, reply_markup=keyboard)
         return
 
-    # In private chat: Welcome message and command overview
+    # In private chat: Clean full-fledged Main Hub
     text = (
-        f"🏏 <b>WELCOME TO JPL CRICKET BOT!</b>\n\n"
-        f"Hello, <b>{username}</b>! You are registered and ready to play.\n\n"
-        f"🎮 <b>HOW TO PLAY:</b>\n"
-        f"• <b>Bowler</b> types a number privately here in Bot DM.\n"
-        f"• <b>Batsman</b> types a number in the group (or here in 1v1 DM).\n"
-        f"• Match numbers ➡️ <b>OUT!</b> Differ ➡️ Batsman scores runs!\n\n"
-        f"📌 <b>COMMANDS:</b>\n"
-        f"• /challenge_bot - Play 1v1 vs Smart Bot\n"
-        f"• /profile | /stats | /history\n"
-        f"• /leaderboard | /tournaments | /rules\n"
-        f"• /help | /about"
+        f"🏏 <b>JPL CRICKET BOT</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Welcome, <b>{username}</b>! You're ready to play.\n\n"
+        f"🎯 <b>Bowler:</b> Type your secret number in DM\n"
+        f"🏏 <b>Batsman:</b> Type your shot in Group (or DM vs Bot)\n\n"
+        f"<i>Use the buttons below to play, read rules, or check stats:</i>"
     )
-    await MediaService.send_with_image(bot, message.chat.id, "welcome", text)
+    await MediaService.send_with_image(bot, message.chat.id, "welcome", text, reply_markup=get_dm_start_keyboard())
 
 # Group Start Menu Callbacks
 @router.callback_query(F.data == "menu:start_solo")
@@ -613,105 +678,100 @@ async def cmd_live_score(message: Message, bot: Bot):
 @router.message(Command("about"))
 async def cmd_about(message: Message):
     text = (
-        f"ℹ️ <b>ABOUT JPL CRICKET BOT</b>\n\n"
-        f"🏏 <b>Advanced Hand Cricket & Tournament System</b>\n"
-        f"⚡ Private DM Bowling + Group Batting + Smart 1v1 Bot\n"
-        f"🏆 Automated Solo Knockouts & Host-Managed Team Leagues\n\n"
+        f"ℹ️ <b>ABOUT JPL CRICKET BOT</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏏 <b>Hand Cricket & Tournament Engine</b>\n"
+        f"⚡ Private DM Bowling • Group Batting • Smart AI\n"
+        f"🎬 Live MP4 Ball Clips & Generated Scorecards\n\n"
         f"👨‍💻 <b>Made by @prathamesh63</b>"
     )
     await message.answer(text, parse_mode="HTML")
 
 @router.message(Command("rules"))
 async def cmd_rules(message: Message):
-    text = (
-        f"📜 <b>HAND CRICKET GAME RULES</b>\n\n"
-        f"• Available numbers: <b>0, 1, 2, 3, 4, 5, 6</b>\n"
-        f"• <b>Dismissal (WICKET):</b> If batsman and bowler select identical numbers, batsman is OUT.\n"
-        f"• <b>Scoring:</b> If numbers differ, batsman adds their selected number to total score.\n"
-        f"• <b>2 Innings:</b> Both players alternate batting and bowling.\n"
-        f"• <b>Target:</b> Second innings player chases (First Innings Score + 1).\n"
-        f"• <b>Victory:</b> Reaching target wins the match for the chasing team. Getting bowled out before target gives victory to the first batsman.\n"
-        f"• <b>Tie:</b> If balls run out and scores are equal."
+    await message.answer(
+        RULEBOOK_PAGES["basics"],
+        reply_markup=get_rulebook_keyboard("basics"),
+        parse_mode="HTML"
     )
-    await message.answer(text, parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("rules:"))
+async def on_rulebook_page(callback: CallbackQuery):
+    page = callback.data.split(":", 1)[1]
+    text = RULEBOOK_PAGES.get(page, RULEBOOK_PAGES["basics"])
+    await _show_or_edit(callback, text, reply_markup=get_rulebook_keyboard(page))
+    await callback.answer()
+
+async def _build_profile_text(user_id: int) -> str:
+    user = await db.get("users", str(user_id))
+    if not user:
+        return "ℹ️ Please type /start to register first."
+    stats = await db.get("statistics", str(user_id), {})
+    reg_date = datetime.fromtimestamp(user.get("registered_at", time.time())).strftime("%Y-%m-%d")
+    username = (user.get("username") or f"player_{user_id}").lstrip("@")
+    return (
+        f"👤 <b>PLAYER PROFILE</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏏 Player: <b>{username}</b>\n"
+        f"📅 Joined: {reg_date}\n"
+        f"⚔️ Matches: <b>{stats.get('matches_played', 0)}</b> "
+        f"(W: {stats.get('matches_won', 0)} | L: {stats.get('matches_lost', 0)})\n"
+        f"🏏 Total Runs: <b>{stats.get('total_runs', 0)}</b>\n"
+        f"🎯 Win Rate: <b>{stats.get('win_percentage', 0.0)}%</b>\n"
+        f"⚡ Streak: <b>{stats.get('current_streak', 0)}</b> wins\n"
+        f"🏆 Trophies: <b>{stats.get('tournament_victories', 0)}</b>"
+    )
+
+async def _build_stats_text(user_id: int) -> str:
+    stats = await db.get("statistics", str(user_id))
+    if not stats:
+        return "ℹ️ No statistics yet. Play your first match to generate stats!"
+    username = (stats.get("username") or f"player_{user_id}").lstrip("@")
+    return (
+        f"📊 <b>CAREER STATISTICS</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏏 Player: <b>{username}</b>\n\n"
+        f"⚔️ Matches: <b>{stats.get('matches_played', 0)}</b> "
+        f"(✅ {stats.get('matches_won', 0)} | ❌ {stats.get('matches_lost', 0)} | 🤝 {stats.get('matches_drawn', 0)})\n"
+        f"🏏 Total Runs: <b>{stats.get('total_runs', 0)}</b>\n"
+        f"🌟 Highest Score: <b>{stats.get('highest_score', 0)}</b>\n"
+        f"📈 Batting Avg: <b>{stats.get('batting_average', 0.0)}</b>\n"
+        f"🎯 Win Rate: <b>{stats.get('win_percentage', 0.0)}%</b>\n"
+        f"🔥 Best Streak: <b>{stats.get('highest_streak', 0)}</b>\n"
+        f"🏆 Tournaments Won: <b>{stats.get('tournament_victories', 0)}</b>"
+    )
+
+async def _build_history_text(user_id: int) -> str:
+    matches_db = await db.load("matches")
+    user_matches = [
+        m for m in matches_db.values()
+        if isinstance(m, dict) and (m.get("player1_id") == user_id or m.get("player2_id") == user_id)
+    ]
+    if not user_matches:
+        return "📜 <b>RECENT MATCH HISTORY</b>\n━━━━━━━━━━━━━━━━━━━━\nNo matches played yet."
+    user_matches.sort(key=lambda x: x.get("created_at", 0), reverse=True)
+    text = "📜 <b>RECENT MATCH HISTORY</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+    for m in user_matches[:5]:
+        p1 = (m.get("player1_username") or "P1").lstrip("@")
+        p2 = (m.get("player2_username") or "P2").lstrip("@")
+        result = m.get("result_text") or m.get("status")
+        text += f"• <b>{p1}</b> vs <b>{p2}</b>\n  {result}\n\n"
+    return text
 
 @router.message(Command("profile"))
 async def cmd_profile(message: Message):
-    user_id = message.from_user.id
-    user = await db.get("users", str(user_id))
-    stats = await db.get("statistics", str(user_id), {})
-
-    if not user:
-        await message.answer("Please type /start to register.")
-        return
-
-    reg_date = datetime.fromtimestamp(user.get("registered_at", time.time())).strftime("%Y-%m-%d")
-    username = user.get("username", f"player_{user_id}")
-
-    text = (
-        f"👤 <b>PLAYER PROFILE</b>\n\n"
-        f"🏷️ Username: <b>@{username}</b>\n"
-        f"🆔 Telegram ID: <code>{user_id}</code>\n"
-        f"📅 Registered: {reg_date}\n"
-        f"⚔️ Matches: {stats.get('matches_played', 0)} (Won: {stats.get('matches_won', 0)} | Lost: {stats.get('matches_lost', 0)})\n"
-        f"🏏 Total Runs: {stats.get('total_runs', 0)}\n"
-        f"🔥 Win Rate: {stats.get('win_percentage', 0.0)}%\n"
-        f"⚡ Current Streak: {stats.get('current_streak', 0)} wins\n"
-        f"🏆 Tournaments Won: {stats.get('tournament_victories', 0)}"
-    )
-    await message.answer(text, parse_mode="HTML")
+    text = await _build_profile_text(message.from_user.id)
+    await message.answer(text, reply_markup=get_profile_keyboard(), parse_mode="HTML")
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message):
-    user_id = message.from_user.id
-    stats = await db.get("statistics", str(user_id))
-    if not stats:
-        await message.answer("No statistics found. Play your first match to generate stats!")
-        return
-
-    text = (
-        f"📊 <b>CRICKET CAREER STATISTICS</b>\n\n"
-        f"👤 Player: <b>@{stats.get('username', f'player_{user_id}')}</b>\n\n"
-        f"⚔️ <b>Matches:</b> {stats.get('matches_played', 0)}\n"
-        f"✅ <b>Won:</b> {stats.get('matches_won', 0)}\n"
-        f"❌ <b>Lost:</b> {stats.get('matches_lost', 0)}\n"
-        f"🤝 <b>Drawn:</b> {stats.get('matches_drawn', 0)}\n\n"
-        f"🏏 <b>Total Runs:</b> {stats.get('total_runs', 0)}\n"
-        f"🌟 <b>Highest Score:</b> {stats.get('highest_score', 0)}\n"
-        f"🔴 <b>Total Dismissals:</b> {stats.get('total_dismissals', 0)}\n"
-        f"📈 <b>Batting Average:</b> {stats.get('batting_average', 0.0)}\n"
-        f"🎯 <b>Win Percentage:</b> {stats.get('win_percentage', 0.0)}%\n\n"
-        f"🔥 <b>Current Streak:</b> {stats.get('current_streak', 0)}\n"
-        f"⚡ <b>Highest Streak:</b> {stats.get('highest_streak', 0)}\n"
-        f"🏆 <b>Tournaments Won:</b> {stats.get('tournament_victories', 0)}"
-    )
-    await message.answer(text, parse_mode="HTML")
+    text = await _build_stats_text(message.from_user.id)
+    await message.answer(text, reply_markup=get_profile_keyboard(), parse_mode="HTML")
 
 @router.message(Command("history"))
 async def cmd_history(message: Message):
-    user_id = message.from_user.id
-    matches_db = await db.load("matches")
-    user_matches = []
-
-    for m in matches_db.values():
-        if m.get("player1_id") == user_id or m.get("player2_id") == user_id:
-            user_matches.append(m)
-
-    if not user_matches:
-        await message.answer("No match history found.")
-        return
-
-    # Recent 5 matches
-    user_matches.sort(key=lambda x: x.get("created_at", 0), reverse=True)
-    text = "📜 <b>RECENT MATCH HISTORY</b>\n\n"
-    for m in user_matches[:5]:
-        p1 = f"@{m.get('player1_username')}"
-        p2 = f"@{m.get('player2_username')}"
-        status = m.get("status")
-        result = m.get("result_text") or status
-        text += f"• <b>{p1} vs {p2}</b>\n  Outcome: {result}\n\n"
-
-    await message.answer(text, parse_mode="HTML")
+    text = await _build_history_text(message.from_user.id)
+    await message.answer(text, reply_markup=get_profile_keyboard(), parse_mode="HTML")
 
 @router.message(Command("leaderboard"))
 async def cmd_leaderboard(message: Message):
@@ -719,82 +779,161 @@ async def cmd_leaderboard(message: Message):
     lb = await db.load("leaderboard")
     wins_list = lb.get("global_wins", [])[:10]
 
-    text = "🏆 <b>GLOBAL LEADERBOARD (MOST WINS)</b>\n\n"
+    text = "🏆 <b>JPL CRICKET BOT • LEADERBOARD (WINS)</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     if not wins_list:
-        text += "No match records yet. Be the first to win a match!"
+        text += "No match records yet. Be the first to win!"
     else:
         for idx, p in enumerate(wins_list, 1):
-            text += f"{idx}. <b>@{p['username']}</b> – {p['matches_won']} Wins ({p['total_runs']} Runs)\n"
+            uname = p["username"].lstrip("@")
+            text += f"{idx}. <b>{uname}</b> – {p['matches_won']} Wins ({p['total_runs']} Runs)\n"
 
-    # Category buttons
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🏆 Wins", callback_data="lb:wins"),
-            InlineKeyboardButton(text="🏏 Runs", callback_data="lb:runs")
-        ],
-        [
-            InlineKeyboardButton(text="🌟 High Score", callback_data="lb:high"),
-            InlineKeyboardButton(text="🔥 Win %", callback_data="lb:winpct")
-        ],
-        [
-            InlineKeyboardButton(text="⚡ Streak", callback_data="lb:streak")
-        ]
-    ])
-    await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    await message.answer(text, reply_markup=get_leaderboard_keyboard(), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("lb:"))
 async def on_leaderboard_category(callback: CallbackQuery):
     cat = callback.data.split(":")[1]
+    await StatsService.refresh_leaderboards()
     lb = await db.load("leaderboard")
 
     if cat == "wins":
-        title = "🏆 GLOBAL LEADERBOARD (MOST WINS)"
+        title = "🏆 LEADERBOARD • MOST WINS"
         items = lb.get("global_wins", [])[:10]
-        line_fn = lambda p, i: f"{i}. <b>@{p['username']}</b> – {p['matches_won']} Wins\n"
+        line_fn = lambda p, i: f"{i}. <b>{p['username'].lstrip('@')}</b> – {p['matches_won']} Wins\n"
     elif cat == "runs":
-        title = "🏏 HIGHEST RUNS LEADERBOARD"
+        title = "🏏 LEADERBOARD • TOTAL RUNS"
         items = lb.get("highest_runs", [])[:10]
-        line_fn = lambda p, i: f"{i}. <b>@{p['username']}</b> – {p['total_runs']} Runs\n"
+        line_fn = lambda p, i: f"{i}. <b>{p['username'].lstrip('@')}</b> – {p['total_runs']} Runs\n"
     elif cat == "high":
-        title = "🌟 HIGHEST INDIVIDUAL SCORE"
+        title = "🌟 LEADERBOARD • HIGHEST SCORE"
         items = lb.get("highest_score", [])[:10]
-        line_fn = lambda p, i: f"{i}. <b>@{p['username']}</b> – {p['highest_score']} Runs\n"
+        line_fn = lambda p, i: f"{i}. <b>{p['username'].lstrip('@')}</b> – {p['highest_score']} Runs\n"
     elif cat == "winpct":
-        title = "🎯 BEST WIN PERCENTAGE (Min 3 Matches)"
+        title = "🎯 LEADERBOARD • WIN % (Min 3)"
         items = lb.get("best_win_percentage", [])[:10]
-        line_fn = lambda p, i: f"{i}. <b>@{p['username']}</b> – {p['win_percentage']}% ({p['matches_won']}/{p['matches_played']})\n"
+        line_fn = lambda p, i: f"{i}. <b>{p['username'].lstrip('@')}</b> – {p['win_percentage']}% ({p['matches_won']}/{p['matches_played']})\n"
     elif cat == "streak":
-        title = "🔥 LONGEST WINNING STREAK"
+        title = "🔥 LEADERBOARD • WIN STREAK"
         items = lb.get("longest_streak", [])[:10]
-        line_fn = lambda p, i: f"{i}. <b>@{p['username']}</b> – {p['longest_streak']} Streak\n"
+        line_fn = lambda p, i: f"{i}. <b>{p['username'].lstrip('@')}</b> – {p['longest_streak']} Streak\n"
     else:
         await callback.answer("Invalid category.")
         return
 
-    text = f"<b>{title}</b>\n\n"
+    text = f"<b>{title}</b>\n━━━━━━━━━━━━━━━━━━━━\n"
     if not items:
         text += "No records available for this category yet."
     else:
         for idx, item in enumerate(items, 1):
             text += line_fn(item, idx)
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🏆 Wins", callback_data="lb:wins"),
-            InlineKeyboardButton(text="🏏 Runs", callback_data="lb:runs")
-        ],
-        [
-            InlineKeyboardButton(text="🌟 High Score", callback_data="lb:high"),
-            InlineKeyboardButton(text="🔥 Win %", callback_data="lb:winpct")
-        ],
-        [
-            InlineKeyboardButton(text="⚡ Streak", callback_data="lb:streak")
-        ]
-    ])
-    try:
-        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-    except Exception:
-        pass
+    await _show_or_edit(callback, text, reply_markup=get_leaderboard_keyboard())
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("hub:"))
+async def on_hub_action(callback: CallbackQuery, bot: Bot):
+    action = callback.data.split(":", 1)[1]
+    user = callback.from_user
+    username = (user.username or f"player_{user.id}").lstrip("@")
+    chat = callback.message.chat
+    is_group = chat.type in ["group", "supergroup"]
+
+    if action == "main":
+        if is_group:
+            text = (
+                f"🏏 <b>JPL CRICKET BOT</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+                f"Pick a mode below to start playing:"
+            )
+            await _show_or_edit(callback, text, reply_markup=get_group_start_keyboard())
+        else:
+            text = (
+                f"🏏 <b>JPL CRICKET BOT</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+                f"Welcome, <b>{username}</b>! Choose an option below:"
+            )
+            await _show_or_edit(callback, text, reply_markup=get_dm_start_keyboard())
+        await callback.answer()
+        return
+
+    if action == "profile":
+        await _show_or_edit(callback, await _build_profile_text(user.id), reply_markup=get_profile_keyboard())
+        await callback.answer()
+        return
+
+    if action == "stats":
+        await _show_or_edit(callback, await _build_stats_text(user.id), reply_markup=get_profile_keyboard())
+        await callback.answer()
+        return
+
+    if action == "history":
+        await _show_or_edit(callback, await _build_history_text(user.id), reply_markup=get_profile_keyboard())
+        await callback.answer()
+        return
+
+    if action == "about":
+        text = (
+            f"ℹ️ <b>ABOUT JPL CRICKET BOT</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+            f"🏏 <b>Hand Cricket & Tournament Engine</b>\n"
+            f"⚡ Private DM Bowling • Group Batting • Smart AI\n"
+            f"🎬 Live MP4 Ball Clips & Generated Scorecards\n\n"
+            f"👨‍💻 <b>Made by @prathamesh63</b>"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Main Menu", callback_data="hub:main")]])
+        await _show_or_edit(callback, text, reply_markup=kb)
+        await callback.answer()
+        return
+
+    if action == "help":
+        text = (
+            f"📋 <b>JPL CRICKET BOT • COMMANDS</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+            f"• /start – Main Menu\n"
+            f"• /challenge_bot – 1v1 vs Smart Bot\n"
+            f"• /score – Live Scorecard Image\n"
+            f"• /rules – Interactive Rule Book\n"
+            f"• /profile | /stats | /history\n"
+            f"• /leaderboard | /tournaments\n"
+            f"• /start_solo | /start_tournament"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Main Menu", callback_data="hub:main")]])
+        await _show_or_edit(callback, text, reply_markup=kb)
+        await callback.answer()
+        return
+
+    if action == "tournaments":
+        tournaments = await db.load("tournaments")
+        active = [t for t in tournaments.values() if isinstance(t, dict) and t.get("status") in ["registration", "countdown", "active"]]
+        if not active:
+            text = "🏆 <b>TOURNAMENTS</b>\n━━━━━━━━━━━━━━━━━━━━\nNo active tournaments right now. Use /start_solo or /start_tournament in a group!"
+        else:
+            text = "🏆 <b>ACTIVE TOURNAMENTS</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+            for t in active[:6]:
+                text += f"• <b>{t.get('name')}</b> ({t.get('mode', '').upper()} • {t.get('status', '').upper()})\n"
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Main Menu", callback_data="hub:main")]])
+        await _show_or_edit(callback, text, reply_markup=kb)
+        await callback.answer()
+        return
+
+    if action == "challenge_bot":
+        if is_group and await has_active_group_session(chat.id):
+            await callback.answer("⚠️ A game or tournament is already active in this group!", show_alert=True)
+            return
+        from game_engine.bot_ai import BotPsychologyEngine
+        match_id = f"bot_{uuid.uuid4().hex[:8]}"
+        await callback.answer("🤖 Starting 1v1 vs Smart Bot!")
+        await GameService.start_new_match(
+            match_id=match_id,
+            player1_id=user.id,
+            player1_username=username,
+            player2_id=BotPsychologyEngine.BOT_USER_ID,
+            player2_username=BotPsychologyEngine.BOT_USERNAME,
+            group_chat_id=chat.id,
+            bot=bot,
+            max_balls=36,
+            wickets=1,
+            mode="host",
+            min_number=0,
+            max_number=6
+        )
+        return
+
     await callback.answer()
 
 @router.message(Command("tournaments"))

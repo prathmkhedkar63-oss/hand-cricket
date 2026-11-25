@@ -364,3 +364,20 @@ async def test_dynamic_scoreboard_images_and_db_auto_cleanup():
         assert filenames
         for fname in filenames:
             assert MediaService._resolve_video_path(fname) is not None, f"Missing video {fname} for {key}"
+
+    # Verify interactive Rule Book & Hub keyboards
+    from unittest.mock import AsyncMock, MagicMock
+    from bot.handlers.player_handlers import RULEBOOK_PAGES, on_rulebook_page
+    from bot.keyboards.game_keyboards import get_dm_start_keyboard, get_match_end_keyboard
+    assert len(RULEBOOK_PAGES) == 5
+    assert len(get_dm_start_keyboard().inline_keyboard) == 4
+    assert len(get_match_end_keyboard().inline_keyboard[0]) == 3
+
+    cb = MagicMock()
+    cb.data = "rules:timers"
+    cb.message = MagicMock(text="old")
+    cb.message.edit_text = AsyncMock()
+    cb.answer = AsyncMock()
+    await on_rulebook_page(cb)
+    cb.message.edit_text.assert_awaited_once()
+    assert "SUPER OVER" in cb.message.edit_text.call_args[0][0]

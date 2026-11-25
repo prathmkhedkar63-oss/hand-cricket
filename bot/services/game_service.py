@@ -590,9 +590,15 @@ class GameService:
                         bot, match.group_chat_id, "match_over", f"🏁 <b>MATCH OVER!</b>"
                     )
                     from game_engine.scoreboard_image import ScoreboardImageGenerator
+                    from bot.keyboards.game_keyboards import get_match_end_keyboard
                     card_bytes = ScoreboardImageGenerator.render_match_card(match)
                     await MediaService.send_generated_image(
-                        bot, match.group_chat_id, card_bytes, "match_scorecard.jpg", summary_text
+                        bot,
+                        match.group_chat_id,
+                        card_bytes,
+                        "match_scorecard.jpg",
+                        summary_text,
+                        reply_markup=get_match_end_keyboard()
                     )
                 except Exception as e:
                     logger.error(f"Match scorecard error, falling back to text: {e}")
