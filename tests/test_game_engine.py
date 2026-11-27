@@ -381,3 +381,74 @@ async def test_dynamic_scoreboard_images_and_db_auto_cleanup():
     await on_rulebook_page(cb)
     cb.message.edit_text.assert_awaited_once()
     assert "SUPER OVER" in cb.message.edit_text.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_anti_pm_lockout_hidden_bowler_no_score_in_commentary_and_45s_ping():
+    import uuid
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from game_engine.scoreboard import ScoreboardFormatter
+    from bot.services.stats_service import StatsService, resolve_player_name, format_user_tag
+    from bot.services.tournament_service import TournamentService
+    from bot.services.game_service import GameService
+    from bot.handlers.player_handlers import on_tournament_register
+
+    # 1. Players without @username use real Telegram display name instead of player_uid
+    no_uname_user = MagicMock(id=444555, username=None, full_name="Aarav Verma", first_name="Aarav", last_name="Verma")
+    assert resolve_player_name(no_uname_user) == "Aarav Verma"
+    rec = await StatsService.get_or_create_user(444555, None, "Aarav Verma")
+    assert rec["username"] == "Aarav Verma"
+    tag = format_user_tag(444555, "Aarav Verma")
+    assert 'href="tg://user?id=444555"' in tag and "@" not in tag
+
+    # 2. Commentary hides bowler number AND hides running scoreboard
+    m = GameEngine.create_match(f"m_sec_{uuid.uuid4().hex[:5]}", 101, "BatOne", 202, "BowlTwo")
+    GameEngine.record_bowler_choice(m, 202, 5)
+    _, _, ball_run = GameEngine.record_batsman_choice(m, 101, 4)
+    ball_card = ScoreboardFormatter.format_ball_result(ball_run, m)
+    assert "5" not in ball_card            # Bowler number MUST NOT appear!
+    assert "4/0" not in ball_card          # Scoreboard MUST NOT appear in ball commentary!
+    assert "Ov" not in ball_card
+
+    GameEngine.record_bowler_choice(m, 202, 3)
+    _, _, ball_out = GameEngine.record_batsman_choice(m, 101, 3)
+    out_card = ScoreboardFormatter.format_ball_result(ball_out, m)
+    assert "OUT!" in out_card
+    assert "0/1" not in out_card
+
+    # 3. Anti-PM Lockout Check blocks registration if send_chat_action fails
+    t_id = f"t_pm_{uuid.uuid4().hex[:5]}"
+    await TournamentService.create_tournament(t_id, "PM Check Cup", "Test", "solo", -1001122, 101)
+    blocked_bot = AsyncMock()
+    blocked_bot.send_chat_action.side_effect = Exception("Forbidden: bot can't initiate conversation")
+    blocked_bot._me = MagicMock(username="IPL_CS_BOT")
+    reg_cb = MagicMock()
+    reg_cb.data = f"treg:{t_id}"
+    reg_cb.from_user = no_uname_user
+    reg_cb.answer = AsyncMock()
+    await on_tournament_register(reg_cb, blocked_bot)
+    reg_cb.answer.assert_awaited_once()
+    assert "Open Bot DM" in reg_cb.answer.call_args[0][0]
+    assert len(await TournamentService.get_tournament_participants(t_id)) == 0
+
+    # Open DM succeeds -> registration succeeds with real display name!
+    open_bot = AsyncMock()
+    reg_cb2 = MagicMock()
+    reg_cb2.data = f"treg:{t_id}"
+    reg_cb2.from_user = no_uname_user
+    reg_cb2.answer = AsyncMock()
+    await on_tournament_register(reg_cb2, open_bot)
+    parts = await TournamentService.get_tournament_participants(t_id)
+    assert len(parts) == 1 and parts[0]["username"] == "Aarav Verma"
+
+    # 4. Auto-Ping at 45s ("⏳ 15s left") before 60s timeout penalty
+    m_timer = GameEngine.create_match(f"m_tm_{uuid.uuid4().hex[:5]}", 101, "BatOne", 202, "BowlTwo", group_chat_id=-1003344)
+    GameService.active_matches[m_timer.match_id] = m_timer
+    timer_bot = AsyncMock()
+    timer_bot.send_message.return_value = MagicMock(message_id=9876)
+    with patch("bot.services.game_service.asyncio.sleep", new=AsyncMock()):
+        await GameService._turn_timer_worker(m_timer.match_id, "bowler", timer_bot, 60)
+    sent_texts = [call.kwargs.get("text", "") for call in timer_bot.send_message.await_args_list]
+    assert any("15s left" in txt for txt in sent_texts)
+    assert any("TURN TIMEOUT" in txt for txt in sent_texts)
+    GameService.cleanup_match_cache(m_timer.match_id)

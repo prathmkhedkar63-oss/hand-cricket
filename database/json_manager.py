@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from config.settings import settings
@@ -63,13 +64,114 @@ class JSONDatabaseManager:
         "audit_logs": 1000
     }
 
-    def __init__(self, data_dir: Optional[Path] = None, backup_dir: Optional[Path] = None):
+    def __init__(self, data_dir: Optional[Path] = None, backup_dir: Optional[Path] = None, database_url: Optional[str] = None):
         self.data_dir = data_dir or settings.DATA_DIR
         self.backup_dir = backup_dir or settings.BACKUP_DIR
+        # When tests pass an explicit tmp data_dir without database_url, keep them local JSON isolated
+        if database_url is not None:
+            self.database_url: Optional[str] = database_url.strip() or None
+        elif data_dir is not None:
+            self.database_url = None
+        else:
+            raw_url = settings.DATABASE_URL
+            self.database_url = raw_url.strip() if isinstance(raw_url, str) and raw_url.strip() else None
+
+        self._pg_pool = None
+        self._pg_init_lock: Optional[asyncio.Lock] = None
+        self._pg_failed: bool = False
         self._cache: Dict[str, Any] = {}
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.backup_manager = BackupManager(self.data_dir, self.backup_dir, settings.MAX_BACKUP_COPIES)
         self.initialize_tables()
+
+    @property
+    def using_external_db(self) -> bool:
+        return bool(self.database_url and not self._pg_failed)
+
+    @staticmethod
+    def _normalize_pg_url(url: str) -> str:
+        clean = url.strip()
+        if clean.startswith("postgres://"):
+            clean = "postgresql://" + clean[len("postgres://"):]
+        return clean
+
+    async def _get_pg_pool(self):
+        if not self.database_url or self._pg_failed:
+            return None
+        if self._pg_pool is not None:
+            return self._pg_pool
+
+        if self._pg_init_lock is None:
+            self._pg_init_lock = asyncio.Lock()
+
+        async with self._pg_init_lock:
+            if self._pg_pool is not None:
+                return self._pg_pool
+            try:
+                import asyncpg
+                dsn = self._normalize_pg_url(self.database_url)
+                connect_kwargs: Dict[str, Any] = {
+                    "min_size": 1,
+                    "max_size": 5,
+                    "statement_cache_size": 0,  # Compatible with Supabase/PgBouncer transaction poolers
+                }
+                if "localhost" not in dsn and "127.0.0.1" not in dsn and "sslmode=" not in dsn:
+                    connect_kwargs["ssl"] = "require"
+                pool = await asyncpg.create_pool(dsn, **connect_kwargs)
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS bot_tables (
+                            table_name TEXT PRIMARY KEY,
+                            payload JSONB NOT NULL,
+                            updated_at DOUBLE PRECISION NOT NULL
+                        )
+                        """
+                    )
+                self._pg_pool = pool
+                logger.info("Connected to external PostgreSQL database (bot_tables ready).")
+                return self._pg_pool
+            except Exception as e:
+                logger.error(f"External PostgreSQL connection failed, falling back to local JSON: {e}")
+                self._pg_failed = True
+                return None
+
+    async def init_external_db(self) -> bool:
+        """Connects to PostgreSQL (if DATABASE_URL is configured) and seeds any missing tables."""
+        pool = await self._get_pg_pool()
+        if not pool:
+            return False
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("SELECT table_name FROM bot_tables")
+                existing = {r["table_name"] for r in rows}
+                now = time.time()
+                for table in self.DEFAULT_SCHEMAS:
+                    if table not in existing:
+                        seed_data = self.load_sync(table)
+                        await conn.execute(
+                            """
+                            INSERT INTO bot_tables (table_name, payload, updated_at)
+                            VALUES ($1, $2::jsonb, $3)
+                            ON CONFLICT (table_name) DO NOTHING
+                            """,
+                            table,
+                            json.dumps(seed_data, ensure_ascii=False),
+                            now,
+                        )
+            return True
+        except Exception as e:
+            logger.error(f"Failed seeding external DB tables: {e}")
+            return False
+
+    async def close(self):
+        """Cleanly closes external DB connection pool on shutdown."""
+        if self._pg_pool is not None:
+            try:
+                await self._pg_pool.close()
+            except Exception:
+                pass
+            self._pg_pool = None
 
     def get_file_path(self, table: str) -> Path:
         return self.data_dir / f"{table}.json"
@@ -134,7 +236,7 @@ class JSONDatabaseManager:
             self._atomic_write_sync(file_path, data)
 
     async def load(self, table: str) -> Any:
-        """Asynchronously loads table data using in-memory cache with disk fallback."""
+        """Asynchronously loads table data using in-memory cache with external DB / disk fallback."""
         if table in self._cache:
             return self._cache[table]
 
@@ -142,13 +244,41 @@ class JSONDatabaseManager:
         async with async_lock:
             if table in self._cache:
                 return self._cache[table]
+
+            pool = await self._get_pg_pool()
+            if pool is not None:
+                try:
+                    async with pool.acquire() as conn:
+                        row = await conn.fetchrow("SELECT payload FROM bot_tables WHERE table_name = $1", table)
+                        if row is not None:
+                            raw = row["payload"]
+                            data = json.loads(raw) if isinstance(raw, str) else raw
+                            self._cache[table] = data
+                            return data
+                        # Missing table row: seed from local JSON or default schema
+                        data = self.load_sync(table)
+                        await conn.execute(
+                            """
+                            INSERT INTO bot_tables (table_name, payload, updated_at)
+                            VALUES ($1, $2::jsonb, $3)
+                            ON CONFLICT (table_name) DO NOTHING
+                            """,
+                            table,
+                            json.dumps(data, ensure_ascii=False),
+                            time.time(),
+                        )
+                        self._cache[table] = data
+                        return data
+                except Exception as e:
+                    logger.warning(f"External DB load failed for '{table}', falling back to JSON: {e}")
+
             loop = asyncio.get_running_loop()
             data = await loop.run_in_executor(None, self.load_sync, table)
             self._cache[table] = data
             return data
 
     async def save(self, table: str, data: Any):
-        """Asynchronously writes table data atomically and updates cache (capping unbounded logs)."""
+        """Asynchronously writes table data to external DB (or local atomic JSON) and updates cache."""
         if table in self.LOG_CAP_TABLES and isinstance(data, list):
             cap = self.LOG_CAP_TABLES[table]
             if len(data) > cap:
@@ -157,6 +287,26 @@ class JSONDatabaseManager:
         self._cache[table] = data
         async_lock = locker.get_async_lock(table)
         async with async_lock:
+            pool = await self._get_pg_pool()
+            if pool is not None:
+                try:
+                    payload_json = json.dumps(data, ensure_ascii=False)
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            """
+                            INSERT INTO bot_tables (table_name, payload, updated_at)
+                            VALUES ($1, $2::jsonb, $3)
+                            ON CONFLICT (table_name) DO UPDATE
+                            SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
+                            """,
+                            table,
+                            payload_json,
+                            time.time(),
+                        )
+                    return
+                except Exception as e:
+                    logger.warning(f"External DB save failed for '{table}', falling back to JSON: {e}")
+
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self.save_sync, table, data)
 

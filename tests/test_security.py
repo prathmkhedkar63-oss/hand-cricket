@@ -155,42 +155,62 @@ async def test_messege_push_broadcast():
 
 
 @pytest.mark.asyncio
-async def test_cricket_fun_admin_only_and_group_tracking():
+async def test_admin_delete_bot_message():
     from unittest.mock import AsyncMock, MagicMock
-    from bot.handlers.admin_handlers import cmd_push_fact, cmd_toggle_fun
-    from bot.services.cricket_fun_service import CricketFunService
+    from bot.handlers.admin_handlers import cmd_delete_bot_message
     from config.settings import settings
-    from database.json_manager import db
 
-    # Register a group in known_groups
-    s = await db.load("settings")
-    s.setdefault("known_groups", [])
-    if -100999111 not in s["known_groups"]:
-        s["known_groups"].append(-100999111)
-    await db.save("settings", s)
+    mock_bot = AsyncMock()
+    mock_bot.id = 8345716216
 
-    # Non-admin blocked from /push_fact and /toggle_fun
+    # Non-admin blocked
     user_msg = MagicMock()
     user_msg.from_user = MagicMock(id=555111, username="regular_player")
-    user_msg.chat = MagicMock(id=-100999111, type="supergroup")
     user_msg.answer = AsyncMock()
-    await cmd_push_fact(user_msg, AsyncMock())
+    await cmd_delete_bot_message(user_msg, mock_bot)
     assert "Access denied" in user_msg.answer.call_args[0][0]
 
-    # Admin pushes live web headline + dark joke to groups (mock RSS XML response)
-    from unittest.mock import patch
-    rss_xml = "<rss><channel><item><title>India vs Australia: Virat Kohli hits century in World Cup clash - ESPN</title></item></channel></rss>"
-    mock_bot = AsyncMock()
-    admin_msg = MagicMock()
-    admin_msg.from_user = MagicMock(id=999001, username=settings.SUPER_ADMIN_USERNAME.lstrip("@"))
-    admin_msg.chat = MagicMock(id=-100999111, type="supergroup")
-    admin_msg.answer = AsyncMock()
-    with patch.object(CricketFunService, "fetch_web_headlines", new=AsyncMock(return_value=CricketFunService._parse_rss_titles(rss_xml))):
-        await cmd_push_fact(admin_msg, mock_bot)
-    assert mock_bot.send_message.await_count >= 1
-    assert "LIVE CRICKET HEADLINE & DARK JOKE PUSHED" in admin_msg.answer.call_args[0][0]
+    # Admin without reply receives usage prompt
+    no_reply_msg = MagicMock()
+    no_reply_msg.from_user = MagicMock(id=999001, username=settings.SUPER_ADMIN_USERNAME.lstrip("@"))
+    no_reply_msg.reply_to_message = None
+    no_reply_msg.answer = AsyncMock()
+    await cmd_delete_bot_message(no_reply_msg, mock_bot)
+    assert "Reply to any bot message" in no_reply_msg.answer.call_args[0][0]
+    mock_bot.delete_message.assert_not_awaited()
 
-    # Admin toggles 3h autopost
-    await cmd_toggle_fun(admin_msg)
-    assert "3h Cricket Fact & Dark Joke Auto-Post" in admin_msg.answer.call_args[0][0]
-    assert CricketFunService.AUTO_INTERVAL_SECONDS == 3 * 3600
+    # Admin replying to another user's message is rejected
+    other_user_msg = MagicMock()
+    other_user_msg.from_user = MagicMock(id=999001, username=settings.SUPER_ADMIN_USERNAME.lstrip("@"))
+    other_user_msg.reply_to_message = MagicMock(message_id=1111, from_user=MagicMock(id=555111))
+    other_user_msg.answer = AsyncMock()
+    await cmd_delete_bot_message(other_user_msg, mock_bot)
+    assert "only delete messages sent by the bot" in other_user_msg.answer.call_args[0][0]
+    mock_bot.delete_message.assert_not_awaited()
+
+    # Admin deletes bot's replied message and trigger message
+    del_msg = MagicMock()
+    del_msg.from_user = MagicMock(id=999001, username=settings.SUPER_ADMIN_USERNAME.lstrip("@"))
+    del_msg.chat = MagicMock(id=-100999111)
+    del_msg.reply_to_message = MagicMock(message_id=4242, from_user=MagicMock(id=8345716216))
+    del_msg.delete = AsyncMock()
+    del_msg.answer = AsyncMock()
+
+    await cmd_delete_bot_message(del_msg, mock_bot)
+    mock_bot.delete_message.assert_awaited_once_with(chat_id=-100999111, message_id=4242)
+    del_msg.delete.assert_awaited_once()
+
+    # If deleting bot message fails, error is reported and trigger message is preserved
+    failing_bot = AsyncMock()
+    failing_bot.id = 8345716216
+    failing_bot.delete_message = AsyncMock(side_effect=RuntimeError("message can't be deleted"))
+    fail_msg = MagicMock()
+    fail_msg.from_user = MagicMock(id=999001, username=settings.SUPER_ADMIN_USERNAME.lstrip("@"))
+    fail_msg.chat = MagicMock(id=-100999111)
+    fail_msg.reply_to_message = MagicMock(message_id=4243, from_user=MagicMock(id=8345716216))
+    fail_msg.delete = AsyncMock()
+    fail_msg.answer = AsyncMock()
+
+    await cmd_delete_bot_message(fail_msg, failing_bot)
+    assert "Could not delete message" in fail_msg.answer.call_args[0][0]
+    fail_msg.delete.assert_not_awaited()

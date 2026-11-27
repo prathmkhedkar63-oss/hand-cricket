@@ -9,7 +9,7 @@ from database.json_manager import db
 from config.settings import settings
 from bot.services.host_tournament_service import HostTournamentService
 from bot.services.tournament_service import TournamentService
-from bot.services.stats_service import StatsService
+from bot.services.stats_service import StatsService, resolve_player_name
 from bot.services.game_service import GameService
 from bot.keyboards.host_keyboards import get_host_dashboard_keyboard
 from bot.middlewares.auth_middleware import is_admin_user
@@ -55,8 +55,8 @@ async def resolve_player(message: Message, arg_text: str = "") -> List[Tuple[int
     # 1. Reply to user
     if message.reply_to_message and message.reply_to_message.from_user:
         target = message.reply_to_message.from_user
-        u_name = target.username or f"player_{target.id}"
-        await StatsService.get_or_create_user(target.id, u_name, target.first_name)
+        u_name = resolve_player_name(target)
+        await StatsService.get_or_create_user(target.id, target.username, target.full_name or target.first_name or "")
         resolved.append((target.id, u_name))
         seen_ids.add(target.id)
 
@@ -84,7 +84,7 @@ async def resolve_player(message: Message, arg_text: str = "") -> List[Tuple[int
             uid = int(tok)
             if uid not in seen_ids:
                 u = users.get(str(uid))
-                uname = u.get("username") if u else f"player_{uid}"
+                uname = u.get("username") if u else f"Player {uid}"
                 if not u:
                     await StatsService.get_or_create_user(uid, uname)
                 resolved.append((uid, uname))

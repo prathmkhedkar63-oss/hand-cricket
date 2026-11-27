@@ -179,7 +179,7 @@ class CommentaryEngine:
                 "{bowler} outfoxes {batsman} completely",
                 "{batsman} walks straight into {bowler}'s trap",
                 "Deadly delivery from {bowler} crashes into the stumps",
-                "{bowler} reads {batsman}'s mind and strikes gold",
+                "{bowler} outsmarts {batsman} with a vicious change of pace",
                 "{batsman} swings and misses — absolute perfection from {bowler}"
             ],
             "closers": [

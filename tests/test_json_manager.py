@@ -34,3 +34,63 @@ async def test_database_crud(tmp_path):
     await manager.save("ball_history", oversized)
     loaded_balls = await manager.load("ball_history")
     assert len(loaded_balls) == manager.LOG_CAP_TABLES["ball_history"]
+
+
+@pytest.mark.asyncio
+async def test_external_postgres_adapter(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    pg_store = {}
+
+    class FakeConn:
+        async def execute(self, query, *args):
+            if "INSERT INTO bot_tables" in query:
+                tname, payload_json = args[0], args[1]
+                if "DO UPDATE" in query or tname not in pg_store:
+                    pg_store[tname] = payload_json
+
+        async def fetch(self, query):
+            return [{"table_name": k} for k in pg_store.keys()]
+
+        async def fetchrow(self, query, tname):
+            if tname in pg_store:
+                return {"payload": pg_store[tname]}
+            return None
+
+    class FakeAcquire:
+        def __init__(self, conn):
+            self.conn = conn
+        async def __aenter__(self):
+            return self.conn
+        async def __aexit__(self, *args):
+            return False
+
+    fake_conn = FakeConn()
+    fake_pool = MagicMock()
+    fake_pool.acquire.return_value = FakeAcquire(fake_conn)
+    fake_pool.close = AsyncMock()
+
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=fake_pool)) as mock_pool:
+        mgr = JSONDatabaseManager(
+            data_dir=tmp_path / "d",
+            backup_dir=tmp_path / "b",
+            database_url="postgres://user:pass@db.example.com:5432/jplbot"
+        )
+        assert await mgr.init_external_db() is True
+        assert mgr.using_external_db is True
+        # Ensure postgres:// normalized to postgresql:// and SSL enabled for remote host
+        dsn_arg = mock_pool.call_args[0][0]
+        assert dsn_arg.startswith("postgresql://")
+        assert mock_pool.call_args.kwargs.get("ssl") == "require"
+        assert mock_pool.call_args.kwargs.get("statement_cache_size") == 0
+
+        await mgr.set("users", "901", {"user_id": 901, "username": "ExternalUser"})
+        assert "ExternalUser" in pg_store["users"]
+
+        # Clear RAM cache and reload strictly from mocked Postgres
+        mgr._cache.clear()
+        reloaded = await mgr.get("users", "901")
+        assert reloaded["username"] == "ExternalUser"
+
+        await mgr.close()
+        fake_pool.close.assert_awaited_once()

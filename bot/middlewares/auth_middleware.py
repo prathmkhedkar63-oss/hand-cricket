@@ -91,10 +91,13 @@ class AuthMiddleware(BaseMiddleware):
 
         user: User = data.get("event_from_user")
         if user:
+            full_or_first = getattr(user, "full_name", None)
+            if not isinstance(full_or_first, str) or not full_or_first.strip():
+                full_or_first = user.first_name if isinstance(getattr(user, "first_name", None), str) else ""
             user_info = await StatsService.get_or_create_user(
                 user_id=user.id,
                 username=user.username,
-                first_name=user.first_name or ""
+                first_name=full_or_first
             )
             if user_info.get("is_banned"):
                 if isinstance(event, CallbackQuery):

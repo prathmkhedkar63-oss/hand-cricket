@@ -1,7 +1,7 @@
 import time
 import uuid
 import logging
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, List
 from game_engine.models import MatchState, InningsState, BallEvent, MatchStatus, DismissalType
 from database.json_manager import db
 
@@ -124,6 +124,10 @@ class GameEngine:
         if not current_inn:
             return False, "Innings not initialized.", None
 
+        # On ball 1 of a fresh solo over, clear the previous over's display strip
+        if match.is_solo_rotation and match.solo_over_balls == 0:
+            match.solo_over_recent_balls = []
+
         current_inn.balls += 1
         is_wicket = (number == bowler_num)
         runs_scored = 0
@@ -168,7 +172,10 @@ class GameEngine:
         match.updated_at = now
 
         # Check match / innings transitions
-        GameEngine._evaluate_match_state(match, current_inn, is_wicket)
+        if match.is_solo_rotation:
+            GameEngine._evaluate_solo_rotation_ball(match, current_inn, is_wicket, runs_scored)
+        else:
+            GameEngine._evaluate_match_state(match, current_inn, is_wicket)
 
         return True, "Ball completed successfully.", ball_event
 
@@ -259,11 +266,17 @@ class GameEngine:
         match.updated_at = now
 
         if role == "bowler":
-            uid = str(match.current_bowler_id)
+            offender_id = match.current_bowler_id
+            offender_username = match.current_bowler_username
+            uid = str(offender_id)
             warnings = match.player_warnings.get(uid, 0) + 1
             match.player_warnings[uid] = warnings
 
             current_inn.runs += 6
+            if match.is_solo_rotation:
+                b_stat = match.solo_player_stats.get(str(match.current_batsman_id))
+                if b_stat is not None:
+                    b_stat["runs"] += 6
             dismissed = warnings >= 3
 
             # Check if 2nd innings target reached via +6 penalty
@@ -275,12 +288,23 @@ class GameEngine:
                 wickets_left = match.wickets_per_innings - current_inn.wickets
                 match.result_text = f"@{match.winner_username} won by {wickets_left} wicket(s) (target reached via penalty runs)!"
             elif dismissed:
-                if match.mode == "solo":
+                if match.is_solo_rotation:
+                    n = len(match.solo_roster)
+                    match.solo_bowler_idx = GameEngine._next_solo_bowler_idx(
+                        match.solo_bowler_idx, match.solo_batsman_idx, n
+                    )
+                    new_bowl = match.solo_roster[match.solo_bowler_idx]
+                    match.current_bowler_id = new_bowl["user_id"]
+                    match.current_bowler_username = new_bowl["username"]
+                    current_inn.bowler_id = new_bowl["user_id"]
+                    current_inn.bowler_username = new_bowl["username"]
+                    match.player_warnings[uid] = 0
+                elif match.mode == "solo":
                     current_inn.is_completed = True
                     match.status = MatchStatus.COMPLETED
                     match.winner_id = match.current_batsman_id
                     match.winner_username = match.current_batsman_username
-                    match.result_text = f"@{match.current_bowler_username} dismissed after 3 warnings! @{match.current_batsman_username} wins!"
+                    match.result_text = f"@{offender_username} dismissed after 3 warnings! @{match.current_batsman_username} wins!"
                 else:
                     # Host tournament: pause match so host/captain appoints a new bowler
                     match.status = MatchStatus.PAUSED
@@ -288,34 +312,47 @@ class GameEngine:
             return {
                 "applied": True,
                 "role": "bowler",
-                "offender_id": match.current_bowler_id,
-                "offender_username": match.current_bowler_username,
+                "offender_id": offender_id,
+                "offender_username": offender_username,
                 "warnings": warnings,
                 "dismissed": dismissed,
                 "runs_delta": 6,
                 "score": f"{current_inn.runs}/{current_inn.wickets}",
-                "needs_appointment": dismissed and match.mode != "solo" and match.status == MatchStatus.PAUSED
+                "needs_appointment": dismissed and match.mode != "solo" and not match.is_solo_rotation and match.status == MatchStatus.PAUSED
             }
 
         elif role == "batsman":
-            uid = str(match.current_batsman_id)
+            offender_id = match.current_batsman_id
+            offender_username = match.current_batsman_username
+            uid = str(offender_id)
             warnings = match.player_warnings.get(uid, 0) + 1
             match.player_warnings[uid] = warnings
 
             current_inn.runs = max(0, current_inn.runs - 6)
+            if match.is_solo_rotation:
+                b_stat = match.solo_player_stats.get(uid)
+                if b_stat is not None:
+                    b_stat["runs"] = max(0, b_stat["runs"] - 6)
             dismissed = warnings >= 3
 
             if dismissed:
                 current_inn.wickets += 1
                 match.pending_bowler_number = None
                 match.pending_bowler_ball_id = None
-                GameEngine._evaluate_match_state(match, current_inn, is_wicket=True)
+                if match.is_solo_rotation:
+                    if match.solo_over_balls == 0:
+                        match.solo_over_recent_balls = []
+                    current_inn.balls += 1
+                    current_inn.recent_balls.append("W")
+                    GameEngine._evaluate_solo_rotation_ball(match, current_inn, is_wicket=True, runs_scored=0)
+                else:
+                    GameEngine._evaluate_match_state(match, current_inn, is_wicket=True)
 
             return {
                 "applied": True,
                 "role": "batsman",
-                "offender_id": match.current_batsman_id,
-                "offender_username": match.current_batsman_username,
+                "offender_id": offender_id,
+                "offender_username": offender_username,
                 "warnings": warnings,
                 "dismissed": dismissed,
                 "runs_delta": -6,
@@ -377,3 +414,193 @@ class GameEngine:
         match.current_bowler_username = p2_user
         match.updated_at = now
         return True
+
+    @staticmethod
+    def _next_solo_bowler_idx(current_idx: int, batsman_idx: int, total_players: int) -> int:
+        """Advance bowler in cycle (wrapping around), always skipping the active batsman."""
+        for step in range(1, total_players + 1):
+            cand = (current_idx + step) % total_players
+            if cand != batsman_idx:
+                return cand
+        return current_idx
+
+    @staticmethod
+    def create_solo_rotation_match(
+        match_id: str,
+        roster: List[Dict[str, Any]],
+        tournament_id: Optional[str] = None,
+        round_name: str = "Solo Arena",
+        group_chat_id: Optional[int] = None,
+        min_number: int = 1,
+        max_number: int = 6
+    ) -> MatchState:
+        """
+        Creates a multi-player Solo Tournament match where:
+        - Player 1 bats first, Player 2 bowls Over 1
+        - Batsman rotates ONLY on getting OUT
+        - Bowler rotates every 6 balls (or mid-over if the incoming batsman was bowling)
+        """
+        if len(roster) < 2:
+            raise ValueError("Solo rotation match requires at least 2 players.")
+
+        now = time.time()
+        clean_roster = [
+            {"user_id": int(p["user_id"]), "username": str(p.get("username") or f"player_{p['user_id']}").lstrip("@")}
+            for p in roster
+        ]
+        player_stats: Dict[str, Dict[str, Any]] = {}
+        for idx, p in enumerate(clean_roster, 1):
+            player_stats[str(p["user_id"])] = {
+                "user_id": p["user_id"],
+                "username": p["username"],
+                "order": idx,
+                "runs": 0,
+                "balls": 0,
+                "fours": 0,
+                "sixes": 0,
+                "is_out": False,
+                "balls_bowled": 0,
+                "runs_conceded": 0,
+                "wickets_taken": 0,
+            }
+
+        p1 = clean_roster[0]
+        p2 = clean_roster[1]
+        first_inn = InningsState(
+            innings_id=f"{match_id}_inn_1",
+            innings_num=1,
+            batsman_id=p1["user_id"],
+            batsman_username=p1["username"],
+            bowler_id=p2["user_id"],
+            bowler_username=p2["username"],
+            runs=0,
+            wickets=0,
+            balls=0,
+            is_completed=False
+        )
+
+        return MatchState(
+            match_id=match_id,
+            tournament_id=tournament_id,
+            round_name=round_name,
+            player1_id=p1["user_id"],
+            player1_username=p1["username"],
+            player2_id=p2["user_id"],
+            player2_username=p2["username"],
+            status=MatchStatus.IN_PROGRESS,
+            current_innings=1,
+            current_batsman_id=p1["user_id"],
+            current_batsman_username=p1["username"],
+            current_bowler_id=p2["user_id"],
+            current_bowler_username=p2["username"],
+            first_innings=first_inn,
+            mode="solo",
+            min_number=min_number,
+            max_number=max_number,
+            max_balls=0,
+            wickets_per_innings=1,
+            group_chat_id=group_chat_id,
+            created_at=now,
+            updated_at=now,
+            is_solo_rotation=True,
+            solo_roster=clean_roster,
+            solo_batsman_idx=0,
+            solo_bowler_idx=1,
+            solo_over_balls=0,
+            solo_completed_overs=0,
+            solo_over_recent_balls=[],
+            solo_player_stats=player_stats,
+        )
+
+    @staticmethod
+    def _evaluate_solo_rotation_ball(match: MatchState, current_inn: InningsState, is_wicket: bool, runs_scored: int):
+        """
+        Applies Solo Rotation rules after each ball:
+        - Updates batsman & bowler solo_player_stats
+        - Over continues across wickets (solo_over_balls wraps on 6)
+        - Batsman rotates ONLY on OUT
+        - Bowler rotates on 6-ball over completion, OR mid-over if new batsman == current bowler
+        """
+        n = len(match.solo_roster)
+        bat_uid = str(match.current_batsman_id)
+        bowl_uid = str(match.current_bowler_id)
+
+        bat_stat = match.solo_player_stats.get(bat_uid)
+        if bat_stat is not None:
+            bat_stat["balls"] += 1
+            if is_wicket:
+                bat_stat["is_out"] = True
+            else:
+                bat_stat["runs"] += runs_scored
+                if runs_scored == 4:
+                    bat_stat["fours"] += 1
+                elif runs_scored == 6:
+                    bat_stat["sixes"] += 1
+
+        bowl_stat = match.solo_player_stats.get(bowl_uid)
+        if bowl_stat is not None:
+            bowl_stat["balls_bowled"] += 1
+            if is_wicket:
+                bowl_stat["wickets_taken"] += 1
+            else:
+                bowl_stat["runs_conceded"] += runs_scored
+
+        # Track global over progression (continues even when wickets fall)
+        match.solo_over_balls += 1
+        match.solo_over_recent_balls.append("W" if is_wicket else str(runs_scored))
+        over_completed = (match.solo_over_balls >= 6)
+        if over_completed:
+            match.solo_completed_overs += 1
+            match.solo_over_balls = 0
+
+        if is_wicket:
+            next_bat_idx = match.solo_batsman_idx + 1
+            if next_bat_idx >= n:
+                # All players have completed their batting innings -> crown highest scorer!
+                current_inn.is_completed = True
+                current_inn.dismissal_reason = "All Players Batted"
+                match.status = MatchStatus.COMPLETED
+                ranked = sorted(
+                    match.solo_player_stats.values(),
+                    key=lambda p: (-p["runs"], p["balls"], p["order"])
+                )
+                winner = ranked[0]
+                match.winner_id = winner["user_id"]
+                match.winner_username = winner["username"]
+                match.result_text = f"{winner['username']} won Solo Tournament with {winner['runs']} runs ({winner['balls']}b)!"
+                logger.info(f"Solo Rotation {match.match_id} completed. Winner: {winner['username']} ({winner['runs']} runs)")
+                return
+
+            # Rotate batsman to next player in order; reset per-batsman live innings counters
+            match.solo_batsman_idx = next_bat_idx
+            new_bat = match.solo_roster[next_bat_idx]
+            match.current_batsman_id = new_bat["user_id"]
+            match.current_batsman_username = new_bat["username"]
+            current_inn.batsman_id = new_bat["user_id"]
+            current_inn.batsman_username = new_bat["username"]
+            current_inn.runs = 0
+            current_inn.wickets = 0
+            current_inn.balls = 0
+            current_inn.fours = 0
+            current_inn.sixes = 0
+            current_inn.recent_balls = []
+
+            # Bowler rotation on OUT:
+            # 1) If over completed on this wicket ball, OR
+            # 2) If new batsman was currently bowling in the middle of the over -> next bowler takes over remaining balls!
+            if over_completed or match.solo_bowler_idx == match.solo_batsman_idx:
+                match.solo_bowler_idx = GameEngine._next_solo_bowler_idx(
+                    match.solo_bowler_idx, match.solo_batsman_idx, n
+                )
+        else:
+            # Not out: batsman stays! Bowler rotates ONLY when 6 balls of the over complete
+            if over_completed:
+                match.solo_bowler_idx = GameEngine._next_solo_bowler_idx(
+                    match.solo_bowler_idx, match.solo_batsman_idx, n
+                )
+
+        new_bowl = match.solo_roster[match.solo_bowler_idx]
+        match.current_bowler_id = new_bowl["user_id"]
+        match.current_bowler_username = new_bowl["username"]
+        current_inn.bowler_id = new_bowl["user_id"]
+        current_inn.bowler_username = new_bowl["username"]

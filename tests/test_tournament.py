@@ -183,3 +183,106 @@ async def test_team_max_11_remove_swap_and_ball_batching():
     assert len(GameService._pending_balls) == 0
     history = await db.load("ball_history")
     assert any(b.get("ball_id") == "batch_b1" for b in history)
+
+
+def test_solo_rotation_out_over_and_midover_bowler_takeover():
+    from game_engine.engine import GameEngine
+    from game_engine.models import MatchStatus
+    from game_engine.scoreboard import ScoreboardFormatter
+    from game_engine.scoreboard_image import ScoreboardImageGenerator
+
+    roster = [
+        {"user_id": 1, "username": "p1"},
+        {"user_id": 2, "username": "p2"},
+        {"user_id": 3, "username": "p3"},
+        {"user_id": 4, "username": "p4"},
+    ]
+
+    # Scenario A: 6-ball over completes -> batsman stays, bowler rotates 2 -> 3
+    m1 = GameEngine.create_solo_rotation_match("sr_test_1", roster, tournament_id="t1")
+    assert m1.current_batsman_username == "p1"
+    assert m1.current_bowler_username == "p2"
+
+    for _ in range(6):
+        GameEngine.record_bowler_choice(m1, 2, 1)
+        ok, _, _ = GameEngine.record_batsman_choice(m1, 1, 4)
+        assert ok
+
+    assert m1.solo_completed_overs == 1
+    assert m1.solo_over_balls == 0
+    assert m1.current_batsman_username == "p1"  # Batsman only changes on OUT!
+    assert m1.current_bowler_username == "p3"   # Bowler rotated 2 -> 3 after 6 balls
+    assert m1.solo_player_stats["1"]["runs"] == 24
+
+    # Ball 1 & 2 of Over 2: P3 bowls ball 1 (2 runs), ball 2 (P1 OUT!)
+    GameEngine.record_bowler_choice(m1, 3, 2)
+    GameEngine.record_batsman_choice(m1, 1, 5)
+    GameEngine.record_bowler_choice(m1, 3, 4)
+    GameEngine.record_batsman_choice(m1, 1, 4)  # Wicket!
+    assert m1.current_batsman_username == "p2"  # 1 out -> 2 bats
+    assert m1.current_bowler_username == "p3"   # P3 != P2, so P3 continues Over 2!
+    assert m1.solo_over_balls == 2              # Over still continues (4 balls left)
+    assert m1.first_innings.runs == 0           # Fresh batting score for P2
+
+    # P3 finishes remaining 4 balls of Over 2 -> Over 2 completes -> rotates to P4
+    for _ in range(4):
+        GameEngine.record_bowler_choice(m1, 3, 1)
+        GameEngine.record_batsman_choice(m1, 2, 2)
+    assert m1.solo_completed_overs == 2
+    assert m1.solo_over_balls == 0
+    assert m1.current_batsman_username == "p2"
+    assert m1.current_bowler_username == "p4"
+
+    # Scenario B: Mid-over wicket where new batsman WAS bowling -> next bowler takes over remaining over
+    m2 = GameEngine.create_solo_rotation_match("sr_test_2", roster, tournament_id="t2")
+    # Ball 1 of Over 1: P2 bowls to P1 -> 6 runs
+    GameEngine.record_bowler_choice(m2, 2, 1)
+    GameEngine.record_batsman_choice(m2, 1, 6)
+    # Ball 2 of Over 1: P2 bowls 3, P1 bats 3 -> OUT!
+    GameEngine.record_bowler_choice(m2, 2, 3)
+    GameEngine.record_batsman_choice(m2, 1, 3)
+
+    assert m2.current_batsman_username == "p2"  # P2 becomes batsman
+    assert m2.solo_over_balls == 2              # Over 1 still at 2/6 balls
+    assert m2.current_bowler_username == "p3"   # P3 took over remaining 4 balls of Over 1!
+
+    # P3 finishes remaining 4 balls of Over 1 (balls 3..6)
+    for _ in range(4):
+        GameEngine.record_bowler_choice(m2, 3, 2)
+        GameEngine.record_batsman_choice(m2, 2, 6)
+    assert m2.solo_completed_overs == 1
+    assert m2.solo_over_balls == 0
+    assert m2.current_batsman_username == "p2"
+    assert m2.current_bowler_username == "p4"   # Cycle: P3 -> P4
+
+    # Get P2 out to P4 -> P3 bats -> P4 finishes 5 balls -> over completes -> bowler cycles to P1!
+    GameEngine.record_bowler_choice(m2, 4, 5)
+    GameEngine.record_batsman_choice(m2, 2, 5)  # P2 out on 24 runs!
+    assert m2.current_batsman_username == "p3"
+    assert m2.current_bowler_username == "p4"
+    assert m2.solo_over_balls == 1
+
+    for _ in range(5):
+        GameEngine.record_bowler_choice(m2, 4, 1)
+        GameEngine.record_batsman_choice(m2, 3, 2)
+    assert m2.solo_completed_overs == 2
+    assert m2.current_bowler_username == "p1"   # Cycle wrapped around to P1!
+
+    # Get P3 out -> P4 bats -> get P4 out -> match completes, P2 (24 runs) wins!
+    GameEngine.record_bowler_choice(m2, 1, 3)
+    GameEngine.record_batsman_choice(m2, 3, 3)  # P3 out (10 runs)
+    assert m2.current_batsman_username == "p4"
+    assert m2.current_bowler_username == "p1"
+
+    GameEngine.record_bowler_choice(m2, 1, 4)
+    GameEngine.record_batsman_choice(m2, 4, 4)  # P4 out (0 runs)
+    assert m2.status == MatchStatus.COMPLETED
+    assert m2.winner_username == "p2"
+
+    # Verify text & image scoreboards render cleanly for solo rotation
+    sb = ScoreboardFormatter.format_match_summary(m2)
+    assert "p2" in sb
+    img_over = ScoreboardImageGenerator.render_over_card(m2, m2.first_innings)
+    img_match = ScoreboardImageGenerator.render_match_card(m2)
+    assert img_over.startswith(b"\xff\xd8\xff")
+    assert img_match.startswith(b"\xff\xd8\xff")

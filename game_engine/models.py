@@ -97,3 +97,13 @@ class MatchState(BaseModel):
     group_scoreboard_msg_id: Optional[int] = None
     created_at: float = 0.0
     updated_at: float = 0.0
+
+    # Solo Tournament Rotation State (multi-player cycle: bat until OUT, bowl 6 balls / mid-over takeover)
+    is_solo_rotation: bool = False
+    solo_roster: List[Dict[str, Any]] = Field(default_factory=list)
+    solo_batsman_idx: int = 0
+    solo_bowler_idx: int = 1
+    solo_over_balls: int = 0
+    solo_completed_overs: int = 0
+    solo_over_recent_balls: List[str] = Field(default_factory=list)
+    solo_player_stats: Dict[str, Dict[str, Any]] = Field(default_factory=dict)

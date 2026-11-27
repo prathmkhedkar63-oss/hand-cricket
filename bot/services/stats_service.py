@@ -1,4 +1,5 @@
 import time
+import html
 import logging
 from typing import Dict, Any, List, Optional
 from database.json_manager import db
@@ -6,39 +7,77 @@ from game_engine.models import MatchState, MatchStatus
 
 logger = logging.getLogger("stats_service")
 
+
+def resolve_player_name(user) -> str:
+    """Returns @username (stripped) if set, otherwise Telegram full_name/first_name."""
+    uname = getattr(user, "username", None)
+    if isinstance(uname, str) and uname.lstrip("@").strip():
+        return uname.lstrip("@").strip()
+    full = getattr(user, "full_name", None)
+    if isinstance(full, str) and full.strip():
+        return full.strip()
+    first = getattr(user, "first_name", None)
+    last = getattr(user, "last_name", None)
+    parts = [p.strip() for p in (first, last) if isinstance(p, str) and p.strip()]
+    if parts:
+        return " ".join(parts)
+    uid = getattr(user, "id", "")
+    return f"Player {uid}".strip()
+
+
+def format_user_tag(user_id: int, display_name: str) -> str:
+    """Clickable Telegram mention tag without noisy @username spam (works without @username too)."""
+    clean = html.escape((display_name or f"Player {user_id}").lstrip("@"))
+    return f'<a href="tg://user?id={user_id}">{clean}</a>'
+
+
 class StatsService:
     @staticmethod
     async def get_or_create_user(user_id: int, username: Optional[str] = None, first_name: str = "") -> Dict[str, Any]:
         uid_str = str(user_id)
         users = await db.load("users")
         now = time.time()
+        clean_uname = username.lstrip("@").strip() if isinstance(username, str) and username.lstrip("@").strip() else ""
+        clean_first = first_name.strip() if isinstance(first_name, str) and first_name.strip() else ""
+        preferred_name = clean_uname or clean_first or f"Player {user_id}"
 
         if uid_str not in users:
-            clean_username = username.lstrip("@") if username else f"player_{user_id}"
             users[uid_str] = {
                 "user_id": user_id,
-                "username": clean_username,
-                "display_name": first_name or clean_username,
+                "username": preferred_name,
+                "display_name": clean_first or preferred_name,
                 "registered_at": now,
                 "is_banned": False,
                 "ban_reason": None,
                 "private_chat_id": user_id
             }
             await db.save("users", users)
-            logger.info(f"Registered new player: {user_id} (@{clean_username})")
+            logger.info(f"Registered new player: {user_id} ({preferred_name})")
 
             # Initialize empty stats
             stats = await db.load("statistics")
             if uid_str not in stats:
-                stats[uid_str] = StatsService._create_empty_stats(user_id, clean_username, now)
+                stats[uid_str] = StatsService._create_empty_stats(user_id, preferred_name, now)
                 await db.save("statistics", stats)
         else:
-            # Update username if it changed
-            if username:
-                clean_username = username.lstrip("@")
-                if users[uid_str].get("username") != clean_username:
-                    users[uid_str]["username"] = clean_username
-                    await db.save("users", users)
+            existing = users[uid_str]
+            cur_name = existing.get("username", "")
+            needs_upgrade = (
+                (clean_uname and cur_name != clean_uname)
+                or (not clean_uname and clean_first and (not cur_name or cur_name.startswith("player_") or cur_name.startswith("Player ")))
+            )
+            if needs_upgrade:
+                existing["username"] = preferred_name
+                if clean_first:
+                    existing["display_name"] = clean_first
+                await db.save("users", users)
+                stats = await db.load("statistics")
+                if uid_str in stats:
+                    stats[uid_str]["username"] = preferred_name
+                    await db.save("statistics", stats)
+            elif clean_first and existing.get("display_name", "").startswith("player_"):
+                existing["display_name"] = clean_first
+                await db.save("users", users)
 
         return users[uid_str]
 
@@ -71,6 +110,10 @@ class StatsService:
         """
         Updates statistics for human players upon match completion (skips AI Bot ID).
         """
+        if match.is_solo_rotation:
+            await StatsService.update_solo_rotation_stats(match)
+            return
+
         from game_engine.bot_ai import BotPsychologyEngine
 
         stats = await db.load("statistics")
@@ -150,6 +193,39 @@ class StatsService:
             if s["matches_played"] > 0:
                 s["win_percentage"] = round((s["matches_won"] / s["matches_played"]) * 100, 1)
 
+        await db.save("statistics", stats)
+        await StatsService.refresh_leaderboards()
+
+    @staticmethod
+    async def update_solo_rotation_stats(match: MatchState):
+        """Updates career stats for every participant in a multi-player Solo Rotation match."""
+        stats = await db.load("statistics")
+        now = time.time()
+        for uid_str, p in match.solo_player_stats.items():
+            uid = int(p["user_id"])
+            uname = p.get("username") or f"Player {uid}"
+            if uid_str not in stats:
+                stats[uid_str] = StatsService._create_empty_stats(uid, uname, now)
+            rec = stats[uid_str]
+            runs = p.get("runs", 0)
+            rec["matches_played"] += 1
+            rec["total_runs"] += runs
+            rec["highest_score"] = max(rec["highest_score"], runs)
+            if p.get("is_out"):
+                rec["total_dismissals"] += 1
+            rec["last_active"] = now
+            if match.winner_id == uid:
+                rec["matches_won"] += 1
+                rec["weekly_wins"] += 1
+                rec["monthly_wins"] += 1
+                rec["current_streak"] += 1
+                rec["highest_streak"] = max(rec["highest_streak"], rec["current_streak"])
+            else:
+                rec["matches_lost"] += 1
+                rec["current_streak"] = 0
+            d = max(1, rec["total_dismissals"])
+            rec["batting_average"] = round(rec["total_runs"] / d, 2)
+            rec["win_percentage"] = round((rec["matches_won"] / rec["matches_played"]) * 100, 1)
         await db.save("statistics", stats)
         await StatsService.refresh_leaderboards()
 

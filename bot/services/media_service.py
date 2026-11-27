@@ -22,6 +22,7 @@ class MediaService:
     IMAGES: Dict[str, Path] = {
         "welcome": ASSETS_DIR / "welcome.jpg",
         "match_start": ASSETS_DIR / "match_start.jpg",
+        "solo_challenge": ASSETS_DIR / "solo_challenge.jpg",
         "six": ASSETS_DIR / "six.jpg",
         "wicket": ASSETS_DIR / "wicket.jpg",
         "champion": ASSETS_DIR / "champion.jpg",

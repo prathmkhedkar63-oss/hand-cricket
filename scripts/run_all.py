@@ -70,21 +70,27 @@ async def keep_alive_worker():
             await asyncio.sleep(600)  # Every 10 minutes (keeps Render free tier awake)
 
 async def main():
-    # 1. Initialize DB tables & default admin/settings
+    # 1. Initialize local tables & connect external PostgreSQL DB (if DATABASE_URL is set)
     db.initialize_tables()
-    logger.info("Database tables initialized.")
+    ext_connected = await db.init_external_db()
+    logger.info(f"Database ready (mode={'postgresql' if ext_connected else 'local_json'}).")
 
     # 2. Setup Bot
     bot, dp = setup_bot()
 
     # 3. Concurrently run FastAPI Admin API, Aiogram Bot, Keep-Alive Pinger, and 3h Cricket Fun Poster
     from bot.services.cricket_fun_service import CricketFunService
-    await asyncio.gather(
-        run_fastapi(),
-        run_bot(bot, dp),
-        keep_alive_worker(),
-        CricketFunService.auto_poster_worker(bot)
-    )
+    from bot.services.game_service import GameService
+    try:
+        await asyncio.gather(
+            run_fastapi(),
+            run_bot(bot, dp),
+            keep_alive_worker(),
+            CricketFunService.auto_poster_worker(bot)
+        )
+    finally:
+        await GameService.flush_pending_balls()
+        await db.close()
 
 if __name__ == "__main__":
     try:

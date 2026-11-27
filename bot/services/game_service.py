@@ -12,7 +12,7 @@ from game_engine.engine import GameEngine
 from game_engine.scoreboard import ScoreboardFormatter
 from game_engine.bot_ai import BotPsychologyEngine
 from bot.keyboards.game_keyboards import get_go_to_dm_keyboard
-from bot.services.stats_service import StatsService
+from bot.services.stats_service import StatsService, format_user_tag
 from bot.services.media_service import MediaService
 
 logger = logging.getLogger("game_service")
@@ -30,6 +30,8 @@ class GameService:
     _bot_human_bat_history: Dict[str, List[int]] = {}
     _bot_human_bowl_history: Dict[str, List[int]] = {}
     _bot_last_shot: Dict[str, int] = {}
+    # Last temporary turn-prompt message ID in group chat so we auto-clean prompt spam
+    _last_prompt_msg_id: Dict[str, int] = {}
     TURN_TIMEOUT_SECONDS: int = 60
     POSITIVE_REACTIONS: List[str] = ["🔥", "⚡", "👏", "👍", "🎉", "💯", "🤩"]
 
@@ -69,6 +71,16 @@ class GameService:
         cls._bot_human_bat_history.pop(match_id, None)
         cls._bot_human_bowl_history.pop(match_id, None)
         cls._bot_last_shot.pop(match_id, None)
+        cls._last_prompt_msg_id.pop(match_id, None)
+
+    @classmethod
+    async def _delete_last_prompt(cls, match_id: str, chat_id: Optional[int], bot: Bot):
+        msg_id = cls._last_prompt_msg_id.pop(match_id, None)
+        if msg_id and chat_id:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+            except Exception:
+                pass
 
     @classmethod
     async def recover_active_matches(cls):
@@ -129,7 +141,55 @@ class GameService:
     @classmethod
     async def _turn_timer_worker(cls, match_id: str, role: str, bot: Bot, timeout_seconds: int):
         try:
-            await asyncio.sleep(timeout_seconds)
+            # Auto-Ping 15s before timeout (at 45s of a 60s turn)
+            if timeout_seconds > 15:
+                await asyncio.sleep(timeout_seconds - 15)
+                sys_settings = await db.load("settings")
+                if not sys_settings.get("bot_enabled", True):
+                    return
+                match_mid = await cls.get_match(match_id)
+                if not match_mid or match_mid.status != MatchStatus.IN_PROGRESS:
+                    return
+                if role == "bowler" and match_mid.pending_bowler_number is not None:
+                    return
+                if role == "batsman" and match_mid.pending_bowler_number is None:
+                    return
+
+                if role == "bowler":
+                    tag = format_user_tag(match_mid.current_bowler_id, match_mid.current_bowler_username)
+                    if match_mid.current_bowler_id != BotPsychologyEngine.BOT_USER_ID:
+                        try:
+                            await bot.send_message(
+                                chat_id=match_mid.current_bowler_id,
+                                text=f"⏳ <b>15s left</b> to type your bowling number (<b>{match_mid.min_number}–{match_mid.max_number}</b>)!",
+                                parse_mode="HTML"
+                            )
+                        except Exception:
+                            pass
+                        if match_mid.group_chat_id and match_mid.group_chat_id != match_mid.current_bowler_id:
+                            try:
+                                await bot.send_message(
+                                    chat_id=match_mid.group_chat_id,
+                                    text=f"⏳ {tag} — <b>15s left</b> to bowl in DM!",
+                                    parse_mode="HTML"
+                                )
+                            except Exception:
+                                pass
+                else:
+                    tag = format_user_tag(match_mid.current_batsman_id, match_mid.current_batsman_username)
+                    if match_mid.group_chat_id and match_mid.current_batsman_id != BotPsychologyEngine.BOT_USER_ID:
+                        try:
+                            await bot.send_message(
+                                chat_id=match_mid.group_chat_id,
+                                text=f"⏳ {tag} — <b>15s left</b> to bat!",
+                                parse_mode="HTML"
+                            )
+                        except Exception:
+                            pass
+                await asyncio.sleep(15)
+            else:
+                await asyncio.sleep(timeout_seconds)
+
             sys_settings = await db.load("settings")
             if not sys_settings.get("bot_enabled", True):
                 return
@@ -150,23 +210,31 @@ class GameService:
 
             await cls.save_match(match)
 
+            offender_id = res["offender_id"]
             offender = res["offender_username"]
+            offender_tag = format_user_tag(offender_id, offender)
             warnings = res["warnings"]
             delta_str = "+6 runs to batsman" if res["runs_delta"] > 0 else "-6 runs penalty"
 
             if match.group_chat_id:
                 warn_text = (
-                    f"⏱️ <b>TURN TIMEOUT (60s)!</b>\n\n"
-                    f"⚠️ Warning <b>{warnings}/3</b> for {role.title()} <b>@{offender}</b>!\n"
-                    f"📊 Penalty: <b>{delta_str}</b> | Score: <b>{res['score']}</b>\n"
+                    f"⏱️ <b>TURN TIMEOUT (60s)!</b>\n"
+                    f"⚠️ Warning <b>{warnings}/3</b> for {role.title()} {offender_tag} ({delta_str})\n"
                 )
                 if res.get("needs_appointment"):
                     warn_text += (
-                        f"\n🛑 <b>@{offender} dismissed after 3 warnings!</b>\n"
-                        f"Host or Team Captain: use <code>/appoint_bowler @username</code> to appoint a new bowler and resume!"
+                        f"🛑 {offender_tag} dismissed after 3 warnings! "
+                        f"Host/Captain: <code>/appoint_bowler @username</code>"
                     )
+                elif res["dismissed"] and role == "bowler" and match.is_solo_rotation:
+                    bowl_tag = format_user_tag(match.current_bowler_id, match.current_bowler_username)
+                    warn_text += f"🔄 {offender_tag} skipped! Next bowler: {bowl_tag}"
                 elif res["dismissed"] and role == "batsman":
-                    warn_text += f"\n💥 <b>@{offender} is AUTO-OUT after 3 warnings!</b>"
+                    warn_text += f"💥 {offender_tag} is <b>AUTO-OUT</b> after 3 warnings!"
+                    if match.is_solo_rotation and match.status == MatchStatus.IN_PROGRESS:
+                        bat_tag = format_user_tag(match.current_batsman_id, match.current_batsman_username)
+                        bowl_tag = format_user_tag(match.current_bowler_id, match.current_bowler_username)
+                        warn_text += f"\n🏏 Next: {bat_tag} | 🎯 Bowler: {bowl_tag}"
 
                 try:
                     await bot.send_message(chat_id=match.group_chat_id, text=warn_text, parse_mode="HTML")
@@ -246,8 +314,9 @@ class GameService:
                     return
         try:
             new_sb = await bot.send_message(chat_id=match.group_chat_id, text=sb_text, parse_mode="HTML")
-            match.group_scoreboard_msg_id = new_sb.message_id
-            await cls.save_match(match)
+            if new_sb and isinstance(getattr(new_sb, "message_id", None), int):
+                match.group_scoreboard_msg_id = new_sb.message_id
+                await cls.save_match(match)
         except Exception:
             pass
 
@@ -368,11 +437,17 @@ class GameService:
             return
 
         score_info = f"{current_inn.runs}/{current_inn.wickets} (Ball {current_inn.balls + 1})" if current_inn else "0/0"
+        if match.is_solo_rotation:
+            header_line = f"🏆 Solo Tournament ({len(match.solo_roster)} Players)"
+            score_line = f"📊 Batsman: {current_inn.runs if current_inn else 0} ({current_inn.balls if current_inn else 0}b) • Over {match.solo_completed_overs}.{match.solo_over_balls}"
+        else:
+            header_line = f"⚔️ Match: @{match.player1_username} vs @{match.player2_username}"
+            score_line = f"📊 Innings {match.current_innings} Score: {score_info}"
         dm_text = (
             f"🎯 <b>YOUR TURN TO BOWL!</b>\n\n"
-            f"⚔️ Match: @{match.player1_username} vs @{match.player2_username}\n"
+            f"{header_line}\n"
             f"🏏 Batsman: @{match.current_batsman_username}\n"
-            f"📊 Innings {match.current_innings} Score: {score_info}\n\n"
+            f"{score_line}\n\n"
             f"Type your bowling number (<b>{match.min_number} to {match.max_number}</b>) here in DM:\n"
             f"⏱️ <i>You have 60 seconds to bowl! (Your choice remains strictly secret)</i>"
         )
@@ -381,16 +456,20 @@ class GameService:
         except Exception as e:
             logger.warning(f"Could not send private message to bowler {bowler_id}: {e}. Bowler must /start the bot.")
 
-        # Send 'Go to Bot DM' URL button in the group for every delivery
+        # Send compact 'Go to Bot DM' URL button in group (deleting previous stale prompt)
         if match.group_chat_id and match.group_chat_id != bowler_id:
+            await cls._delete_last_prompt(match.match_id, match.group_chat_id, bot)
             bot_uname = cls._get_bot_username(bot)
+            bowl_tag = format_user_tag(bowler_id, match.current_bowler_username)
             try:
-                await bot.send_message(
+                p_msg = await bot.send_message(
                     chat_id=match.group_chat_id,
-                    text=f"🎯 <b>@{match.current_bowler_username}</b>, your turn to bowl! Tap below to open Bot DM and type <b>{match.min_number}–{match.max_number}</b>:",
+                    text=f"🎯 {bowl_tag}, bowl in DM (<b>{match.min_number}–{match.max_number}</b>):",
                     reply_markup=get_go_to_dm_keyboard(bot_uname),
                     parse_mode="HTML"
                 )
+                if p_msg and isinstance(getattr(p_msg, "message_id", None), int):
+                    cls._last_prompt_msg_id[match.match_id] = p_msg.message_id
             except Exception as e:
                 logger.error(f"Failed to send Go-to-DM prompt in group: {e}")
 
@@ -420,18 +499,17 @@ class GameService:
             return
 
         if match.group_chat_id:
-            group_prompt = (
-                f"🎯 <b>BALL DELIVERED!</b>\n\n"
-                f"🏏 <b>@{match.current_batsman_username}</b>, you are on strike!\n"
-                f"Type your batting number (<b>{match.min_number} to {match.max_number}</b>) in chat:\n"
-                f"⏱️ <i>You have 60 seconds to bat!</i>"
-            )
+            await cls._delete_last_prompt(match.match_id, match.group_chat_id, bot)
+            bat_tag = format_user_tag(batsman_id, match.current_batsman_username)
+            group_prompt = f"🏏 {bat_tag}, type your shot (<b>{match.min_number}–{match.max_number}</b>) • ⏱️ 60s"
             try:
-                await bot.send_message(
+                p_msg = await bot.send_message(
                     chat_id=match.group_chat_id,
                     text=group_prompt,
                     parse_mode="HTML"
                 )
+                if p_msg and isinstance(getattr(p_msg, "message_id", None), int):
+                    cls._last_prompt_msg_id[match.match_id] = p_msg.message_id
             except Exception as e:
                 logger.error(f"Failed to send batting prompt to group: {e}")
         cls.start_turn_timer(match.match_id, "batsman", bot)
@@ -466,6 +544,12 @@ class GameService:
             return False, "Match not found."
 
         old_innings = match.current_innings
+        prev_bat_id = match.current_batsman_id
+        prev_bat_uname = match.current_batsman_username
+        prev_bowl_id = match.current_bowler_id
+        prev_bowl_uname = match.current_bowler_username
+        prev_completed_overs = match.solo_completed_overs
+
         success, msg, ball = GameEngine.record_batsman_choice(match, batsman_id, number)
         if not success:
             return False, msg
@@ -479,7 +563,11 @@ class GameService:
 
         # Buffer ball in memory; flush to disk at over end, innings break, or match completion
         cls._pending_balls.append(ball.model_dump())
-        is_over_end = (ball.ball_number > 0 and ball.ball_number % 6 == 0)
+        is_over_end = (
+            (match.solo_completed_overs > prev_completed_overs)
+            if match.is_solo_rotation
+            else (ball.ball_number > 0 and ball.ball_number % 6 == 0)
+        )
         is_innings_break = (match.current_innings != old_innings)
         is_match_end = (match.status in [MatchStatus.COMPLETED, MatchStatus.TIED])
         should_flush = is_over_end or is_innings_break or is_match_end
@@ -498,8 +586,9 @@ class GameService:
         else:
             recent.clear()
 
-        # 1. Announce ball result in group (use MP4 clips for out, 50, 100, 6, 4, dot)
+        # 1. Announce ball result in group (auto-clean previous turn prompt, never reveal bowler number)
         if match.group_chat_id:
+            await cls._delete_last_prompt(match.match_id, match.group_chat_id, bot)
             ball_text = ScoreboardFormatter.format_ball_result(ball, match, recent_runs=recent)
             prev_runs = ball.current_score - (0 if ball.is_wicket else ball.runs_scored)
             try:
@@ -527,7 +616,6 @@ class GameService:
                 logger.error(f"Failed to announce ball result: {e}")
 
             # 2. Post Over Scoreboard image at end of over (skip if match just ended)
-            is_over_end = (ball.ball_number > 0 and ball.ball_number % 6 == 0)
             is_innings_break = (match.current_innings != old_innings)
             is_match_end = (match.status in [MatchStatus.COMPLETED, MatchStatus.TIED])
             if not is_match_end and (is_over_end or is_innings_break):
@@ -555,19 +643,57 @@ class GameService:
                     except Exception:
                         pass
 
+            # 2b. Solo Rotation transition announcements (clean clickable tags, no @ spam)
+            if match.is_solo_rotation and not is_match_end:
+                rot_lines = []
+                bat_tag = format_user_tag(match.current_batsman_id, match.current_batsman_username)
+                bowl_tag = format_user_tag(match.current_bowler_id, match.current_bowler_username)
+                if ball.is_wicket:
+                    out_st = match.solo_player_stats.get(str(prev_bat_id), {})
+                    rot_lines.append(
+                        f"🔄 <b>{prev_bat_uname.lstrip('@')}</b> out for <b>{out_st.get('runs', ball.current_score)} ({out_st.get('balls', ball.ball_number)}b)</b>"
+                    )
+                    if is_over_end:
+                        rot_lines.append(f"🏏 Bat: {bat_tag} | ✅ Over {match.solo_completed_overs} done • 🎯 Bowl: {bowl_tag}")
+                    elif prev_bowl_id != match.current_bowler_id:
+                        rem = 6 - match.solo_over_balls
+                        rot_lines.append(
+                            f"🏏 Bat: {bat_tag} | 🎯 {bowl_tag} takes over remaining <b>{rem}</b> ball(s) of Over {match.solo_completed_overs + 1}"
+                        )
+                    else:
+                        rem = 6 - match.solo_over_balls
+                        rot_lines.append(
+                            f"🏏 Bat: {bat_tag} | 🎯 {bowl_tag} continues ({rem} ball(s) left)"
+                        )
+                elif is_over_end:
+                    rot_lines.append(
+                        f"🔄 Over {match.solo_completed_overs} done • 🏏 {bat_tag} stays | 🎯 Next Bowler: {bowl_tag}"
+                    )
+                if rot_lines:
+                    try:
+                        await bot.send_message(
+                            chat_id=match.group_chat_id,
+                            text="\n".join(rot_lines),
+                            parse_mode="HTML"
+                        )
+                    except Exception:
+                        pass
+
         # 3. Auto Super Over on Tie!
         if match.status == MatchStatus.TIED and not match.is_super_over:
             if GameEngine.start_super_over(match):
                 await cls.save_match(match)
                 if match.group_chat_id:
                     try:
+                        bat_tag = format_user_tag(match.current_batsman_id, match.current_batsman_username)
+                        bowl_tag = format_user_tag(match.current_bowler_id, match.current_bowler_username)
                         await bot.send_message(
                             chat_id=match.group_chat_id,
                             text=(
                                 f"🔥 <b>MATCH TIED! SUPER OVER TIME!</b> 🔥\n\n"
                                 f"⚔️ 1 Over (6 Balls) per side!\n"
-                                f"🏏 Batting 1st: @{match.current_batsman_username}\n"
-                                f"🎯 Bowling 1st: @{match.current_bowler_username}\n\n"
+                                f"🏏 Batting 1st: {bat_tag}\n"
+                                f"🎯 Bowling 1st: {bowl_tag}\n\n"
                                 f"<i>Super Over starting now!</i>"
                             ),
                             parse_mode="HTML"
@@ -615,13 +741,15 @@ class GameService:
 
         # 4. Check if Innings Break occurred
         if match.current_innings != old_innings:
+            bat_tag = format_user_tag(match.current_batsman_id, match.current_batsman_username)
+            bowl_tag = format_user_tag(match.current_bowler_id, match.current_bowler_username)
             break_text = (
                 f"🔔 <b>INNINGS BREAK!</b>\n\n"
                 f"1st Innings Score: <b>{match.first_innings.runs}/{match.first_innings.wickets}</b>\n"
                 f"🎯 <b>TARGET TO WIN: {match.target} runs</b>\n\n"
                 f"Switching roles:\n"
-                f"🏏 New Batsman: @{match.current_batsman_username}\n"
-                f"🎯 New Bowler: @{match.current_bowler_username}\n\n"
+                f"🏏 New Batsman: {bat_tag}\n"
+                f"🎯 New Bowler: {bowl_tag}\n\n"
                 f"<i>Second innings starting now!</i>"
             )
             if match.group_chat_id:
@@ -642,6 +770,31 @@ class GameService:
             return
 
         if t["mode"] == "solo":
+            if match.is_solo_rotation or t.get("solo_rotation"):
+                t["status"] = "completed"
+                t["completed_at"] = time.time()
+                t["champion_id"] = match.winner_id
+                t["champion_username"] = match.winner_username
+                await db.save("tournaments", tournaments)
+
+                stats = await db.load("statistics")
+                uid_str = str(match.winner_id)
+                if uid_str in stats:
+                    stats[uid_str]["tournament_victories"] = stats[uid_str].get("tournament_victories", 0) + 1
+                    await db.save("statistics", stats)
+
+                champ_text = (
+                    f"🏆🎉 <b>JPL CRICKET BOT • SOLO CHAMPION!</b> 🎉🏆\n\n"
+                    f"Tournament: <b>{t['name']}</b>\n"
+                    f"👑 Champion: <b>{(match.winner_username or 'Champion').lstrip('@')}</b>\n"
+                    f"📝 {(match.result_text or '').replace('@', '')}"
+                )
+                try:
+                    await MediaService.send_with_image(bot, t["group_chat_id"], "champion", champ_text)
+                except Exception:
+                    pass
+                return
+
             fixtures = t.get("round_fixtures", [])
             idx = t.get("current_fixture_index", 0)
             if idx < len(fixtures):
@@ -720,6 +873,49 @@ class GameService:
 
                     await asyncio.sleep(3)
                     await cls.start_solo_match_fixture(t["tournament_id"], 0, bot)
+
+    @classmethod
+    async def start_solo_rotation_match(
+        cls,
+        tournament: Dict[str, Any],
+        roster: List[Dict[str, Any]],
+        bot: Bot
+    ) -> MatchState:
+        """Starts the automated multi-player Solo Rotation Tournament match."""
+        tournament_id = tournament["tournament_id"]
+        match_id = f"sr_{tournament_id}"
+        group_chat_id = tournament["group_chat_id"]
+        match = GameEngine.create_solo_rotation_match(
+            match_id=match_id,
+            roster=roster,
+            tournament_id=tournament_id,
+            round_name=tournament.get("name", "Solo Arena"),
+            group_chat_id=group_chat_id,
+            min_number=1,
+            max_number=6,
+        )
+        await cls.save_match(match)
+
+        try:
+            bat_clean = match.current_batsman_username.lstrip("@")
+            bowl_clean = match.current_bowler_username.lstrip("@")
+            await MediaService.send_video_or_animation(
+                bot=bot,
+                chat_id=group_chat_id,
+                video_key="on_ready",
+                caption=(
+                    f"⚔️ <b>JPL CRICKET BOT • SOLO ARENA READY!</b>\n\n"
+                    f"🏆 <b>{tournament['name']}</b> ({len(roster)} Players)\n"
+                    f"🏏 Batting 1st: <b>{bat_clean}</b>\n"
+                    f"🎯 Bowling Over 1: <b>{bowl_clean}</b>\n\n"
+                    f"<i>Use /score anytime to check live standings.</i>"
+                )
+            )
+        except Exception:
+            pass
+
+        await cls.prompt_bowler(match, bot)
+        return match
 
     @classmethod
     async def start_solo_match_fixture(cls, tournament_id: str, fixture_index: int, bot: Bot):

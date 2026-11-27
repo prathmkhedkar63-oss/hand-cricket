@@ -95,8 +95,11 @@ def _pill_color(token: str) -> Tuple[Tuple[int, int, int], Tuple[int, int, int]]
     return (44, 110, 210), (255, 255, 255)
 
 
-def _over_highlight(innings: InningsState) -> Tuple[str, str]:
-    last_over = innings.recent_balls[-6:]
+def _over_highlight(innings: InningsState, match: Optional[MatchState] = None) -> Tuple[str, str]:
+    if match and match.is_solo_rotation:
+        last_over = match.solo_over_recent_balls[-6:]
+    else:
+        last_over = innings.recent_balls[-6:]
     over_runs = 0
     over_wickets = 0
     sixes = 0
@@ -128,26 +131,47 @@ def _over_highlight(innings: InningsState) -> Tuple[str, str]:
 
 
 def _compute_best_performance(match: MatchState) -> Tuple[str, str]:
-    """Pick top performer across both innings using runs, boundaries, and bowling impact."""
+    """Pick top performer across innings/solo roster using runs, boundaries, and bowling impact."""
     candidates: List[Tuple[float, str, str]] = []
-    for inn in (match.first_innings, match.second_innings):
-        if not inn:
-            continue
-        bat_name = _clean_name(inn.batsman_username, 18)
-        bowl_name = _clean_name(inn.bowler_username, 18)
-        sr = (inn.runs / inn.balls * 100.0) if inn.balls > 0 else 0.0
-        bat_score = inn.runs * 1.5 + inn.sixes * 4 + inn.fours * 2 + (sr / 25.0 if inn.balls >= 3 else 0.0)
-        if match.winner_id and inn.batsman_id == match.winner_id:
-            bat_score += 8.0
-        bat_line = f"{bat_name} — {inn.runs} ({inn.balls}b) • {inn.fours}x4, {inn.sixes}x6 • SR {sr:.1f}"
-        candidates.append((bat_score, "🏏 BATTING MVP", bat_line))
+    if match.is_solo_rotation and match.solo_player_stats:
+        for st in match.solo_player_stats.values():
+            name = _clean_name(st.get("username", "Player"), 18)
+            runs = st.get("runs", 0)
+            balls = st.get("balls", 0)
+            fours = st.get("fours", 0)
+            sixes = st.get("sixes", 0)
+            sr = (runs / balls * 100.0) if balls > 0 else 0.0
+            bat_score = runs * 1.5 + sixes * 4 + fours * 2 + (sr / 25.0 if balls >= 3 else 0.0)
+            if match.winner_id and st.get("user_id") == match.winner_id:
+                bat_score += 8.0
+            candidates.append((bat_score, "🏏 BATTING MVP", f"{name} — {runs} ({balls}b) • {fours}x4, {sixes}x6 • SR {sr:.1f}"))
 
-        econ = (inn.runs / (inn.balls / 6.0)) if inn.balls > 0 else 0.0
-        bowl_score = inn.wickets * 24.0 + max(0.0, 12.0 - econ) * 1.5
-        if match.winner_id and inn.bowler_id == match.winner_id:
-            bowl_score += 8.0
-        bowl_line = f"{bowl_name} — {inn.wickets}/{inn.runs} ({_format_overs(inn.balls)} ov) • Econ {econ:.1f}"
-        candidates.append((bowl_score, "🎯 BOWLING MVP", bowl_line))
+            bb = st.get("balls_bowled", 0)
+            if bb > 0:
+                rc = st.get("runs_conceded", 0)
+                wk = st.get("wickets_taken", 0)
+                econ = rc / (bb / 6.0)
+                bowl_score = wk * 24.0 + max(0.0, 12.0 - econ) * 1.5
+                candidates.append((bowl_score, "🎯 BOWLING MVP", f"{name} — {wk}/{rc} ({_format_overs(bb)} ov) • Econ {econ:.1f}"))
+    else:
+        for inn in (match.first_innings, match.second_innings):
+            if not inn:
+                continue
+            bat_name = _clean_name(inn.batsman_username, 18)
+            bowl_name = _clean_name(inn.bowler_username, 18)
+            sr = (inn.runs / inn.balls * 100.0) if inn.balls > 0 else 0.0
+            bat_score = inn.runs * 1.5 + inn.sixes * 4 + inn.fours * 2 + (sr / 25.0 if inn.balls >= 3 else 0.0)
+            if match.winner_id and inn.batsman_id == match.winner_id:
+                bat_score += 8.0
+            bat_line = f"{bat_name} — {inn.runs} ({inn.balls}b) • {inn.fours}x4, {inn.sixes}x6 • SR {sr:.1f}"
+            candidates.append((bat_score, "🏏 BATTING MVP", bat_line))
+
+            econ = (inn.runs / (inn.balls / 6.0)) if inn.balls > 0 else 0.0
+            bowl_score = inn.wickets * 24.0 + max(0.0, 12.0 - econ) * 1.5
+            if match.winner_id and inn.bowler_id == match.winner_id:
+                bowl_score += 8.0
+            bowl_line = f"{bowl_name} — {inn.wickets}/{inn.runs} ({_format_overs(inn.balls)} ov) • Econ {econ:.1f}"
+            candidates.append((bowl_score, "🎯 BOWLING MVP", bowl_line))
 
     if not candidates:
         return "⭐ BEST PERFORMANCE", "Great contest!"
@@ -172,12 +196,13 @@ class ScoreboardImageGenerator:
         f_bold = _load_font(20, bold=True)
         f_small = _load_font(16, bold=False)
 
-        over_num = max(1, innings.balls // 6)
+        over_num = max(1, match.solo_completed_overs if match.is_solo_rotation else (innings.balls // 6))
         # Header bar
         draw.rectangle([0, 0, W, 56], fill=(20, 32, 62))
         draw.rectangle([0, 54, W, 57], fill=(235, 168, 28))
         draw.text((28, 17), "JPL CRICKET BOT", font=f_brand, fill=(235, 168, 28))
-        header_right = title_override or f"END OF OVER {over_num} • INN {innings.innings_num}"
+        default_hdr = f"END OF OVER {over_num} • SOLO" if match.is_solo_rotation else f"END OF OVER {over_num} • INN {innings.innings_num}"
+        header_right = title_override or default_hdr
         _draw_text(draw, (W - 28, 17), header_right, font=f_brand, fill=(220, 230, 245), anchor="ra")
 
         # Main score card
@@ -187,8 +212,8 @@ class ScoreboardImageGenerator:
         draw.text((44, 90), f"BAT: {bat_name}", font=f_title, fill=(255, 255, 255))
         draw.text((44, 126), f"BOWL: {bowl_name}", font=f_sub, fill=(170, 188, 218))
 
-        score_str = f"{innings.runs}/{innings.wickets}"
-        overs_str = f"({_format_overs(innings.balls)} Ov)"
+        score_str = f"{innings.runs} ({innings.balls}b)" if match.is_solo_rotation else f"{innings.runs}/{innings.wickets}"
+        overs_str = f"({match.solo_completed_overs}.{match.solo_over_balls} Ov)" if match.is_solo_rotation else f"({_format_overs(innings.balls)} Ov)"
         crr = (innings.runs / (innings.balls / 6.0)) if innings.balls > 0 else 0.0
         _draw_text(draw, (W - 44, 86), score_str, font=f_score, fill=(255, 215, 70), anchor="ra")
         _draw_text(draw, (W - 44, 142), f"{overs_str}  •  CRR {crr:.2f}", font=f_sub, fill=(195, 212, 238), anchor="ra")
@@ -205,7 +230,7 @@ class ScoreboardImageGenerator:
 
         # This over balls strip
         draw.text((28, 214), "THIS OVER:", font=f_bold, fill=(200, 215, 240))
-        last_balls = innings.recent_balls[-6:]
+        last_balls = (match.solo_over_recent_balls if match.is_solo_rotation else innings.recent_balls)[-6:]
         start_x = 165
         for idx, token in enumerate(last_balls):
             cx = start_x + idx * 54
@@ -215,7 +240,7 @@ class ScoreboardImageGenerator:
             _draw_text(draw, (cx, cy), str(token).upper(), font=f_bold, fill=fg, anchor="mm")
 
         # Best performance / Over highlight box
-        hl_title, hl_detail = _over_highlight(innings)
+        hl_title, hl_detail = _over_highlight(innings, match)
         draw.rounded_rectangle([24, 270, W - 24, 362], radius=12, fill=(18, 46, 56), outline=(52, 168, 128), width=2)
         draw.text((44, 286), hl_title, font=f_bold, fill=(110, 240, 180))
         draw.text((44, 318), hl_detail, font=f_sub, fill=(240, 248, 255))
@@ -242,23 +267,46 @@ class ScoreboardImageGenerator:
         label = "SUPER OVER SCORECARD" if match.is_super_over else f"FINAL SCORECARD • {match.round_name.upper()}"
         _draw_text(draw, (W - 28, 17), label, font=f_brand, fill=(220, 230, 245), anchor="ra")
 
-        # Two innings side-by-side cards
-        boxes = [
-            (24, 76, 388, 238, "1ST INNINGS", match.first_innings),
-            (412, 76, W - 24, 238, "2ND INNINGS", match.second_innings),
-        ]
-        for x1, y1, x2, y2, tag, inn in boxes:
-            draw.rounded_rectangle([x1, y1, x2, y2], radius=14, fill=(22, 34, 64), outline=(54, 78, 128), width=2)
-            draw.text((x1 + 18, y1 + 14), tag, font=f_small, fill=(235, 168, 28))
-            if inn:
-                bat = _clean_name(inn.batsman_username, 17)
-                sr = (inn.runs / inn.balls * 100.0) if inn.balls > 0 else 0.0
-                draw.text((x1 + 18, y1 + 38), bat, font=f_title, fill=(255, 255, 255))
-                draw.text((x1 + 18, y1 + 72), f"{inn.runs}/{inn.wickets}", font=f_score, fill=(255, 215, 70))
-                draw.text((x1 + 148, y1 + 86), f"({_format_overs(inn.balls)} Ov)", font=f_sub, fill=(195, 212, 238))
-                draw.text((x1 + 18, y1 + 126), f"4s: {inn.fours}  •  6s: {inn.sixes}  •  SR: {sr:.1f}", font=f_small, fill=(165, 185, 215))
-            else:
-                draw.text((x1 + 18, y1 + 65), "Did not bat", font=f_sub, fill=(150, 165, 190))
+        # Two summary side-by-side cards (Top 2 in Solo Rotation, or 1st vs 2nd Innings)
+        if match.is_solo_rotation and match.solo_player_stats:
+            ranked = sorted(
+                match.solo_player_stats.values(),
+                key=lambda p: (-p["runs"], p["balls"], p["order"])
+            )
+            solo_boxes = [
+                (24, 76, 388, 238, "🥇 TOP SCORER", ranked[0] if len(ranked) > 0 else None),
+                (412, 76, W - 24, 238, "🥈 RUNNER-UP", ranked[1] if len(ranked) > 1 else None),
+            ]
+            for x1, y1, x2, y2, tag, st in solo_boxes:
+                draw.rounded_rectangle([x1, y1, x2, y2], radius=14, fill=(22, 34, 64), outline=(54, 78, 128), width=2)
+                draw.text((x1 + 18, y1 + 14), tag, font=f_small, fill=(235, 168, 28))
+                if st:
+                    bat = _clean_name(st.get("username", "Player"), 17)
+                    runs, balls = st.get("runs", 0), st.get("balls", 0)
+                    sr = (runs / balls * 100.0) if balls > 0 else 0.0
+                    draw.text((x1 + 18, y1 + 38), bat, font=f_title, fill=(255, 255, 255))
+                    draw.text((x1 + 18, y1 + 72), f"{runs}", font=f_score, fill=(255, 215, 70))
+                    draw.text((x1 + 118, y1 + 86), f"({balls} balls)", font=f_sub, fill=(195, 212, 238))
+                    draw.text((x1 + 18, y1 + 126), f"4s: {st.get('fours', 0)}  •  6s: {st.get('sixes', 0)}  •  SR: {sr:.1f}", font=f_small, fill=(165, 185, 215))
+                else:
+                    draw.text((x1 + 18, y1 + 65), "N/A", font=f_sub, fill=(150, 165, 190))
+        else:
+            boxes = [
+                (24, 76, 388, 238, "1ST INNINGS", match.first_innings),
+                (412, 76, W - 24, 238, "2ND INNINGS", match.second_innings),
+            ]
+            for x1, y1, x2, y2, tag, inn in boxes:
+                draw.rounded_rectangle([x1, y1, x2, y2], radius=14, fill=(22, 34, 64), outline=(54, 78, 128), width=2)
+                draw.text((x1 + 18, y1 + 14), tag, font=f_small, fill=(235, 168, 28))
+                if inn:
+                    bat = _clean_name(inn.batsman_username, 17)
+                    sr = (inn.runs / inn.balls * 100.0) if inn.balls > 0 else 0.0
+                    draw.text((x1 + 18, y1 + 38), bat, font=f_title, fill=(255, 255, 255))
+                    draw.text((x1 + 18, y1 + 72), f"{inn.runs}/{inn.wickets}", font=f_score, fill=(255, 215, 70))
+                    draw.text((x1 + 148, y1 + 86), f"({_format_overs(inn.balls)} Ov)", font=f_sub, fill=(195, 212, 238))
+                    draw.text((x1 + 18, y1 + 126), f"4s: {inn.fours}  •  6s: {inn.sixes}  •  SR: {sr:.1f}", font=f_small, fill=(165, 185, 215))
+                else:
+                    draw.text((x1 + 18, y1 + 65), "Did not bat", font=f_sub, fill=(150, 165, 190))
 
         # Result banner
         draw.rounded_rectangle([24, 256, W - 24, 326], radius=12, fill=(24, 68, 48), outline=(54, 196, 120), width=2)

@@ -7,7 +7,7 @@ from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from database.json_manager import db
-from bot.services.stats_service import StatsService
+from bot.services.stats_service import StatsService, resolve_player_name, format_user_tag
 from bot.services.tournament_service import TournamentService
 from bot.services.solo_tournament_service import SoloTournamentService
 from bot.services.game_service import GameService
@@ -69,8 +69,9 @@ RULEBOOK_PAGES = {
         "📖 <b>JPL CRICKET BOT • RULE BOOK (3/5)</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "🏆 <b>TOURNAMENT MODES</b>\n\n"
-        "⚡ <b>Solo Knockout Cup (/start_solo):</b>\n"
-        "• 120s registration countdown with auto-bracket & live rounds\n\n"
+        "⚡ <b>Solo Rotation Cup (/start_solo):</b>\n"
+        "• 120s countdown • Batsman rotates <b>on OUT only</b>\n"
+        "• Bowlers rotate in cycle every 6 balls (or mid-over if bowler takes strike)\n\n"
         "🏟️ <b>Host Team League (/start_tournament):</b>\n"
         "• Claim host, build <b>Team A vs Team B</b> (up to 11 each)\n"
         "• Commands: <code>/add_a</code>, <code>/add_b</code>, <code>/cap_a</code>, <code>/cap_b</code>, <code>/overs</code>, <code>/toss</code>, <code>/start_match</code>"
@@ -119,8 +120,8 @@ async def is_group_admin_or_super(bot: Bot, chat_id: int, user_id: int, username
 async def cmd_start(message: Message, bot: Bot):
     from bot.services.media_service import MediaService
     user = message.from_user
-    username = (user.username or f"player_{user.id}").lstrip("@")
-    await StatsService.get_or_create_user(user.id, username, user.first_name)
+    username = resolve_player_name(user)
+    await StatsService.get_or_create_user(user.id, user.username, user.full_name or user.first_name or "")
 
     # In a group chat: Prevent double-start if a tournament/match is already active!
     if message.chat.type in ["group", "supergroup"]:
@@ -164,10 +165,20 @@ async def on_menu_start_solo(callback: CallbackQuery, bot: Bot):
         return
 
     user = callback.from_user
-    username = user.username or f"player_{user.id}"
+    username = resolve_player_name(user)
+
+    try:
+        await bot.send_chat_action(chat_id=user.id, action="typing")
+    except Exception:
+        bot_uname = GameService._get_bot_username(bot).lstrip("@")
+        await callback.answer(
+            f"❌ Please /start @{bot_uname} in DM first so I can send secret bowling turns!",
+            show_alert=True
+        )
+        return
 
     t_id = f"solo_{uuid.uuid4().hex[:6]}"
-    t_name = f"Solo Knockout Cup #{t_id[-4:]}"
+    t_name = f"Solo Arena #{t_id[-4:]}"
 
     # Create solo tournament in this group
     await TournamentService.create_tournament(
@@ -199,7 +210,7 @@ async def on_menu_start_tourn(callback: CallbackQuery, bot: Bot):
         return
 
     user = callback.from_user
-    username = user.username or f"player_{user.id}"
+    username = resolve_player_name(user)
 
     t_id = f"tourn_{uuid.uuid4().hex[:6]}"
     t_name = f"Championship Trophy #{t_id[-4:]}"
@@ -251,7 +262,17 @@ async def cmd_start_solo_direct(message: Message, bot: Bot):
         return
 
     user = message.from_user
-    username = user.username or f"player_{user.id}"
+    username = resolve_player_name(user)
+
+    try:
+        await bot.send_chat_action(chat_id=user.id, action="typing")
+    except Exception:
+        bot_uname = GameService._get_bot_username(bot).lstrip("@")
+        await message.answer(
+            f"❌ Please start me in DM first (https://t.me/{bot_uname}) so I can send your secret bowling turns!",
+            parse_mode="HTML"
+        )
+        return
 
     args = message.text.split(maxsplit=1)
     t_id = f"solo_{uuid.uuid4().hex[:6]}"
@@ -278,7 +299,7 @@ async def cmd_start_tournament_direct(message: Message, bot: Bot):
         return
 
     user = message.from_user
-    username = (user.username or f"player_{user.id}").lstrip("@")
+    username = resolve_player_name(user)
 
     args = message.text.split(maxsplit=1)
     t_id = f"tourn_{uuid.uuid4().hex[:6]}"
@@ -438,6 +459,7 @@ async def cmd_help(message: Message):
         f"• /hosts - Manage authorized hosts\n"
         f"• /matches - View all system matches\n"
         f"• /systemstats - Real-time system telemetry\n"
+        f"• /delete - Reply to delete a bot message\n"
         f"• /start_bot - Enable bot\n"
         f"• /stop_bot - Pause bot\n\n"
         f"💡 <i>Any group can be an arena! Use /setgroup inside any group to play tournaments there.</i>"
@@ -456,14 +478,14 @@ async def cmd_toss(message: Message):
         _active_tosses.pop(k, None)
 
     caller = message.from_user
-    caller_name = caller.username or f"player_{caller.id}"
+    caller_name = resolve_player_name(caller)
 
     opp_id = None
     opp_name = None
     if message.reply_to_message and message.reply_to_message.from_user:
         opp = message.reply_to_message.from_user
         opp_id = opp.id
-        opp_name = opp.username or f"player_{opp.id}"
+        opp_name = resolve_player_name(opp)
     else:
         mentions = re.findall(r"@([a-zA-Z0-9_]{3,32})", message.text or "")
         if mentions:
@@ -595,7 +617,17 @@ async def cmd_challenge_bot(message: Message, bot: Bot):
 
     chat_id = message.chat.id
     user = message.from_user
-    username = user.username or f"player_{user.id}"
+    username = resolve_player_name(user)
+
+    try:
+        await bot.send_chat_action(chat_id=user.id, action="typing")
+    except Exception:
+        bot_uname = GameService._get_bot_username(bot).lstrip("@")
+        await message.answer(
+            f"❌ Please start me in DM first (https://t.me/{bot_uname}) so I can send your secret bowling turns!",
+            parse_mode="HTML"
+        )
+        return
     is_group = message.chat.type in ["group", "supergroup"]
 
     if is_group and await has_active_group_session(chat_id):
@@ -708,7 +740,7 @@ async def _build_profile_text(user_id: int) -> str:
         return "ℹ️ Please type /start to register first."
     stats = await db.get("statistics", str(user_id), {})
     reg_date = datetime.fromtimestamp(user.get("registered_at", time.time())).strftime("%Y-%m-%d")
-    username = (user.get("username") or f"player_{user_id}").lstrip("@")
+    username = (user.get("username") or user.get("display_name") or f"Player {user_id}").lstrip("@")
     return (
         f"👤 <b>PLAYER PROFILE</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -726,7 +758,7 @@ async def _build_stats_text(user_id: int) -> str:
     stats = await db.get("statistics", str(user_id))
     if not stats:
         return "ℹ️ No statistics yet. Play your first match to generate stats!"
-    username = (stats.get("username") or f"player_{user_id}").lstrip("@")
+    username = (stats.get("username") or f"Player {user_id}").lstrip("@")
     return (
         f"📊 <b>CAREER STATISTICS</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -833,7 +865,7 @@ async def on_leaderboard_category(callback: CallbackQuery):
 async def on_hub_action(callback: CallbackQuery, bot: Bot):
     action = callback.data.split(":", 1)[1]
     user = callback.from_user
-    username = (user.username or f"player_{user.id}").lstrip("@")
+    username = resolve_player_name(user)
     chat = callback.message.chat
     is_group = chat.type in ["group", "supergroup"]
 
@@ -990,9 +1022,23 @@ async def cmd_my_tournaments(message: Message):
 
 # Tournament Registration Callbacks
 @router.callback_query(F.data.startswith("treg:"))
-async def on_tournament_register(callback: CallbackQuery):
+async def on_tournament_register(callback: CallbackQuery, bot: Bot):
     tid = callback.data.split(":")[1]
-    success, msg = await TournamentService.register_player(tid, callback.from_user.id, callback.from_user.username or "")
+    user = callback.from_user
+    # Anti-PM Lockout Check: block registration until player has opened Bot DM (/start)
+    try:
+        await bot.send_chat_action(chat_id=user.id, action="typing")
+    except Exception:
+        bot_uname = GameService._get_bot_username(bot).lstrip("@")
+        await callback.answer(
+            f"❌ Open Bot DM & tap /start first (t.me/{bot_uname}) so you can receive secret bowling turns!",
+            show_alert=True
+        )
+        return
+
+    display_name = resolve_player_name(user)
+    await StatsService.get_or_create_user(user.id, user.username, user.full_name or user.first_name or "")
+    success, msg = await TournamentService.register_player(tid, user.id, display_name)
     await callback.answer(msg, show_alert=True)
 
 @router.callback_query(F.data.startswith("twid:"))
@@ -1016,7 +1062,7 @@ async def on_tournament_view_participants(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("tforce:"))
 async def on_tournament_force_start(callback: CallbackQuery, bot: Bot):
     tid = callback.data.split(":")[1]
-    actor_username = callback.from_user.username or f"player_{callback.from_user.id}"
+    actor_username = resolve_player_name(callback.from_user)
     is_g_admin = False
     if callback.message and callback.message.chat.type in ["group", "supergroup"]:
         is_g_admin = await is_group_admin_or_super(bot, callback.message.chat.id, callback.from_user.id, actor_username)

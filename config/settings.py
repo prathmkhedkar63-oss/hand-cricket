@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     ADMIN_USERNAME: str = "admin"
     ADMIN_PASSWORD: str = "adminpassword123"
 
+    # External Database (Optional PostgreSQL / Supabase / Neon URL; falls back to local JSON if unset)
+    DATABASE_URL: Optional[str] = os.environ.get("DATABASE_URL")
+
     # Paths
     BASE_DIR: Path = Path(__file__).resolve().parent.parent
     DATA_DIR: Path = Path(__file__).resolve().parent.parent / "data"

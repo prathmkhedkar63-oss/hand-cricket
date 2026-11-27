@@ -124,7 +124,7 @@ class TournamentService:
             if p["tournament_id"] == tournament_id and p["user_id"] == user_id:
                 return False, "You are already registered for this tournament!"
 
-        clean_user = username.lstrip("@") if username else f"player_{user_id}"
+        clean_user = username.lstrip("@").strip() if isinstance(username, str) and username.lstrip("@").strip() else f"Player {user_id}"
         participants.append({
             "tournament_id": tournament_id,
             "user_id": user_id,
@@ -134,7 +134,7 @@ class TournamentService:
             "joined_at": time.time()
         })
         await db.save("participants", participants)
-        return True, f"Successfully registered @{clean_user} for tournament '{tournament['name']}'!"
+        return True, f"Successfully registered {clean_user} for tournament '{tournament['name']}'!"
 
     @staticmethod
     async def withdraw_player(tournament_id: str, user_id: int) -> Tuple[bool, str]:

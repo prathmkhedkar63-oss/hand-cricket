@@ -53,6 +53,9 @@ class ScoreboardFormatter:
 
     @staticmethod
     def format_live_scoreboard(match: MatchState) -> str:
+        if match.is_solo_rotation:
+            return ScoreboardFormatter._format_solo_rotation_scoreboard(match)
+
         p1 = (match.player1_username or f"Player {match.player1_id}").lstrip("@")
         p2 = (match.player2_username or f"Player {match.player2_id}").lstrip("@")
 
@@ -126,10 +129,81 @@ class ScoreboardFormatter:
         return text
 
     @staticmethod
+    def _format_solo_rotation_scoreboard(match: MatchState) -> str:
+        inn = match.first_innings
+        bat_name = match.current_batsman_username.lstrip("@")
+        bowl_name = match.current_bowler_username.lstrip("@")
+        overs_str = f"{match.solo_completed_overs}.{match.solo_over_balls}"
+        bat_runs = inn.runs if inn else 0
+        bat_balls = inn.balls if inn else 0
+        crr = ScoreboardFormatter._format_crr(bat_runs, bat_balls)
+
+        over_tokens = match.solo_over_recent_balls[-6:]
+        over_runs = sum(int(b) for b in over_tokens if str(b).isdigit())
+        over_label = "Last Over" if match.solo_over_balls == 0 and match.solo_completed_overs > 0 else "This Over"
+        over_line = f"{over_label}: {' • '.join(over_tokens)} ({over_runs} runs)\n" if over_tokens else ""
+
+        lines = []
+        for idx, p in enumerate(match.solo_roster):
+            uid = str(p["user_id"])
+            st = match.solo_player_stats.get(uid, {})
+            uname = p["username"].lstrip("@")
+            if match.status == MatchStatus.IN_PROGRESS and idx == match.solo_batsman_idx:
+                tag = "🏏"
+            elif st.get("is_out"):
+                tag = "❌"
+            else:
+                tag = "⏳"
+            bowl_ov = ScoreboardFormatter._format_overs(st.get("balls_bowled", 0))
+            lines.append(
+                f"{idx + 1}. {tag} <b>{uname}</b>: <b>{st.get('runs', 0)}</b> ({st.get('balls', 0)}b)"
+                f" | Bowl: {st.get('wickets_taken', 0)}/{st.get('runs_conceded', 0)} ({bowl_ov})"
+            )
+
+        roster_block = "\n".join(lines)
+        text = (
+            f"🏏 <b>JPL CRICKET BOT • SOLO TOURNAMENT</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🏏 Batter: <b>{bat_name}</b> — <b>{bat_runs}*</b> ({bat_balls}b | CRR {crr})\n"
+            f"🎯 Bowler: <b>{bowl_name}</b> | Over: <b>{overs_str}</b>\n"
+            f"{over_line}"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 <b>PLAYER STANDINGS:</b>\n"
+            f"{roster_block}"
+        )
+        if match.status == MatchStatus.COMPLETED and match.result_text:
+            text += f"\n\n🏆 <b>RESULT:</b> {match.result_text.replace('@', '')}"
+        return text
+
+    @staticmethod
     def format_match_summary(match: MatchState) -> str:
         """
         Generates a clean post-match summary card with 4s, 6s, Strike Rate, and Man of the Match (no @ tags).
         """
+        if match.is_solo_rotation:
+            ranked = sorted(
+                match.solo_player_stats.values(),
+                key=lambda p: (-p["runs"], p["balls"], p["order"])
+            )
+            medals = ["🥇", "🥈", "🥉"]
+            standings_lines = []
+            for i, p in enumerate(ranked):
+                prefix = medals[i] if i < 3 else f"{i + 1}."
+                sr = f"{(p['runs'] / p['balls']) * 100:.1f}" if p["balls"] > 0 else "0.0"
+                standings_lines.append(
+                    f"{prefix} <b>{p['username'].lstrip('@')}</b>: <b>{p['runs']}</b> ({p['balls']}b) • SR {sr} • "
+                    f"Bowl {p['wickets_taken']}/{p['runs_conceded']}"
+                )
+            winner_clean = (match.winner_username or "Champion").lstrip("@")
+            res_clean = (match.result_text or "").replace("@", "")
+            return (
+                f"📋 <b>JPL CRICKET BOT • SOLO SUMMARY</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                + "\n".join(standings_lines)
+                + f"\n━━━━━━━━━━━━━━━━━━━━\n"
+                f"🏆 <b>Champion:</b> <b>{winner_clean}</b>\n"
+                f"📝 {res_clean}"
+            )
         def _inn_line(inn: Optional[InningsState], label: str) -> str:
             if not inn:
                 return f"{label}: Did not bat"
@@ -183,9 +257,11 @@ class ScoreboardFormatter:
         batsman = ball.batsman_username.lstrip("@")
         bowler = ball.bowler_username.lstrip("@")
         current_inn = match.second_innings if ball.innings_num == 2 else match.first_innings
-        score_str = f"{current_inn.runs}/{current_inn.wickets}" if current_inn else "0/0"
-        overs_str = ScoreboardFormatter._format_overs(ball.ball_number)
-        new_runs = current_inn.runs if current_inn else ball.current_score
+        if match.is_solo_rotation:
+            bat_stat = match.solo_player_stats.get(str(ball.batsman_id), {})
+            new_runs = bat_stat.get("runs", ball.current_score)
+        else:
+            new_runs = current_inn.runs if current_inn else ball.current_score
         prev_runs = max(0, new_runs - ball.runs_scored)
 
         comm = CommentaryEngine.generate_ball_commentary(
@@ -199,17 +275,17 @@ class ScoreboardFormatter:
             recent_runs=recent_runs
         )
 
+        # Keep bowler's bowled number secret and omit running scoreboard from ball commentary
         if ball.is_wicket:
-            header = f"💥 <b>OUT!</b> <b>{batsman}</b> ({ball.batsman_number}) = <b>{bowler}</b> ({ball.bowler_number}) | <b>{score_str}</b> ({overs_str} Ov)"
+            header = f"💥 <b>OUT!</b> <b>{batsman}</b> played <b>{ball.batsman_number}</b> — Clean bowled by <b>{bowler}</b>!"
+        elif ball.runs_scored == 0:
+            header = f"⚪ <b>{batsman}</b> played <b>0</b> • <b>DOT BALL!</b>"
         else:
-            header = f"🏏 <b>{batsman}</b>: <b>{ball.batsman_number}</b> | <b>{bowler}</b>: <b>{ball.bowler_number}</b> ➡️ <b>+{ball.runs_scored}</b> (<b>{score_str}</b> • {overs_str} Ov)"
+            run_word = "run" if ball.runs_scored == 1 else "runs"
+            header = f"🏏 <b>{batsman}</b> played <b>{ball.batsman_number}</b> ➡️ <b>+{ball.runs_scored} {run_word}</b>!"
 
         text = f"{header}\n🎙️ <i>{comm['commentary']}</i>"
         if comm.get("achievement"):
             text += f"\n🏅 <b>{comm['achievement']}</b>"
-
-        if match.target and ball.innings_num == 2 and not match.status in [MatchStatus.COMPLETED, MatchStatus.TIED]:
-            needed = max(0, match.target - current_inn.runs)
-            text += f"\n🎯 Need <b>{needed}</b> to win"
 
         return text

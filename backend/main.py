@@ -61,7 +61,11 @@ app.include_router(settings_router)
 
 @app.get("/health", tags=["Health"])
 async def health_check():
-    return {"status": "healthy", "timestamp": time.time()}
+    return {
+        "status": "healthy",
+        "storage": "postgresql" if db.using_external_db else "json",
+        "timestamp": time.time()
+    }
 
 # Mount admin panel static files if built
 admin_dist_path = Path(__file__).resolve().parent.parent / "admin_panel" / "dist"

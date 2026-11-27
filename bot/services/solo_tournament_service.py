@@ -63,7 +63,7 @@ class SoloTournamentService:
             msg = await MediaService.send_with_image(
                 bot=bot_instance,
                 chat_id=group_chat_id,
-                image_key="match_start",
+                image_key="solo_challenge",
                 caption=announcement,
                 reply_markup=get_tournament_register_keyboard(tournament_id)
             )
@@ -173,9 +173,9 @@ class SoloTournamentService:
 
     @classmethod
     async def _countdown_worker(cls, tournament_id: str, bot_instance, group_chat_id: int):
-        # Broadcast milestones (every 30s: 90, 60, 30, plus final 10s countdown)
-        milestones = [90, 60, 30, 10, 5, 4, 3, 2, 1]
-        thirty_sec_milestones = {90, 60, 30}
+        # Non-spam milestones: edit countdown card in-place at 60s & 30s, single reminder at 10s
+        milestones = [60, 30, 10]
+        edit_milestones = {60, 30}
         notified = set()
 
         try:
@@ -196,32 +196,50 @@ class SoloTournamentService:
                         notified.add(m)
                         mins, secs = divmod(m, 60)
                         time_str = f"{mins:02d}:{secs:02d}"
+                        msg_id = t.get("countdown_message_id")
 
-                        if m in thirty_sec_milestones:
+                        if m in edit_milestones and isinstance(msg_id, int):
                             participants = await TournamentService.get_tournament_participants(tournament_id)
                             player_lines = "\n".join(
                                 [f"{i}. <b>{p['username'].lstrip('@')}</b>" for i, p in enumerate(participants, 1)]
                             ) or "None yet"
-                            text = (
-                                f"⏳ <b>{time_str} REMAINING!</b>\n\n"
+                            caption = (
+                                f"🏏 <b>JPL CRICKET BOT • SOLO TOURNAMENT</b>\n\n"
                                 f"🏆 <b>{t['name']}</b>\n"
-                                f"👥 <b>Joined Players ({len(participants)}):</b>\n"
-                                f"{player_lines}"
+                                f"🔢 Numbers: <b>1 to 6</b> | ⏱️ Turn Timer: <b>60s</b>\n"
+                                f"👥 Joined Players (<b>{len(participants)}</b>):\n"
+                                f"{player_lines}\n\n"
+                                f"⏳ Starts in: <b>{time_str}</b>"
                             )
-                            reply_markup = get_tournament_register_keyboard(tournament_id)
-                        else:
-                            text = f"⏳ Tournament starts in <b>{time_str}</b>!"
-                            reply_markup = None
-
-                        try:
-                            await bot_instance.send_message(
-                                chat_id=group_chat_id,
-                                text=text,
-                                reply_markup=reply_markup,
-                                parse_mode="HTML"
-                            )
-                        except Exception as e:
-                            logger.error(f"Error sending milestone {m}: {e}")
+                            kb = get_tournament_register_keyboard(tournament_id)
+                            edited = False
+                            for method_name, arg_name in (("edit_message_caption", "caption"), ("edit_message_text", "text")):
+                                try:
+                                    fn = getattr(bot_instance, method_name)
+                                    await fn(chat_id=group_chat_id, message_id=msg_id, **{arg_name: caption}, reply_markup=kb, parse_mode="HTML")
+                                    edited = True
+                                    break
+                                except Exception:
+                                    continue
+                            if not edited:
+                                try:
+                                    await bot_instance.send_message(
+                                        chat_id=group_chat_id,
+                                        text=f"⏳ <b>{time_str} left!</b> Join <b>{t['name']}</b> ({len(participants)} joined)",
+                                        reply_markup=kb,
+                                        parse_mode="HTML"
+                                    )
+                                except Exception:
+                                    pass
+                        elif m == 10:
+                            try:
+                                await bot_instance.send_message(
+                                    chat_id=group_chat_id,
+                                    text=f"⏳ Starting in <b>10s</b>! Tap Register above before Solo Arena locks.",
+                                    parse_mode="HTML"
+                                )
+                            except Exception as e:
+                                logger.error(f"Error sending 10s reminder: {e}")
                         break
 
                 await asyncio.sleep(1)
@@ -259,31 +277,35 @@ class SoloTournamentService:
         t["status"] = "active"
         t["started_at"] = time.time()
         t["current_round"] = 1
-        t["round_name"] = "Round 1"
-
-        fixtures, byes = TournamentService.generate_single_elimination_bracket(participants, shuffle=True)
-        t["round_fixtures"] = fixtures
-        t["round_byes"] = byes
-        t["round_winners"] = []
-        t["current_fixture_index"] = 0
+        t["round_name"] = "Solo Arena"
+        t["solo_rotation"] = True
+        t["solo_roster"] = [
+            {"user_id": p["user_id"], "username": p["username"].lstrip("@")}
+            for p in participants
+        ]
         await db.save("tournaments", tournaments)
 
-        # Announce bracket in group
-        bye_text = ""
-        if byes:
-            bye_names = ", ".join([f"@{b['username']}" for b in byes])
-            bye_text = f"\n🎟️ <b>Byes to Next Round:</b> {bye_names}\n"
+        # Announce Solo Rotation lineup in group
+        order_lines = []
+        for idx, p in enumerate(t["solo_roster"], 1):
+            role_tag = " 🏏 <i>(Batting 1st)</i>" if idx == 1 else (" 🎯 <i>(Bowling Over 1)</i>" if idx == 2 else "")
+            order_lines.append(f"{idx}. <b>{p['username']}</b>{role_tag}")
 
-        bracket_text = f"🚀 <b>SOLO TOURNAMENT HAS BEGUN!</b>\n\n🏆 <b>{t['name']}</b>\n👥 <b>Round 1 Fixtures:</b>\n"
-        for idx, f in enumerate(fixtures, 1):
-            bracket_text += f"{idx}. @{f['player1']['username']} VS @{f['player2']['username']}\n"
-        bracket_text += bye_text + "\n🔥 <i>Starting Match 1 automatically!</i>"
+        bracket_text = (
+            f"🚀 <b>JPL CRICKET BOT • SOLO TOURNAMENT STARTED!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🏆 <b>{t['name']}</b>\n"
+            f"👥 <b>Player Order ({len(t['solo_roster'])} Players):</b>\n"
+            + "\n".join(order_lines) + "\n\n"
+            f"• Batsman rotates <b>only on OUT</b>\n"
+            f"• Bowler rotates every <b>6 balls</b> (or mid-over if bowler takes strike)"
+        )
 
         try:
             await bot_instance.send_message(chat_id=t["group_chat_id"], text=bracket_text, parse_mode="HTML")
         except Exception as e:
             logger.error(f"Failed to announce tournament start: {e}")
 
-        # Start the first fixture
+        # Start the Solo Rotation match
         from bot.services.game_service import GameService
-        await GameService.start_solo_match_fixture(tournament_id, 0, bot_instance)
+        await GameService.start_solo_rotation_match(t, t["solo_roster"], bot_instance)
