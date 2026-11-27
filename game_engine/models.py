@@ -83,6 +83,8 @@ class MatchState(BaseModel):
     target: Optional[int] = None
     winner_id: Optional[int] = None
     winner_username: Optional[str] = None
+    motm_id: Optional[int] = None
+    motm_username: Optional[str] = None
     result_text: Optional[str] = None
 
     # Configs

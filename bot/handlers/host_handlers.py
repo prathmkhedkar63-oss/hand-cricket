@@ -9,7 +9,7 @@ from database.json_manager import db
 from config.settings import settings
 from bot.services.host_tournament_service import HostTournamentService
 from bot.services.tournament_service import TournamentService
-from bot.services.stats_service import StatsService, resolve_player_name
+from bot.services.stats_service import StatsService, resolve_player_name, format_user_tag
 from bot.services.game_service import GameService
 from bot.keyboards.host_keyboards import get_host_dashboard_keyboard
 from bot.middlewares.auth_middleware import is_admin_user
@@ -97,33 +97,32 @@ def format_teams_roster_card(target_t: dict, teams_data: dict) -> str:
     team_b = teams_data.get("Team B", [])
     captains = teams_data.get("captains", {})
 
-    cap_a = captains.get("Team A", {}).get("username")
-    cap_b = captains.get("Team B", {}).get("username")
-
-    cap_a_str = f"👑 Captain: @{cap_a}\n" if cap_a else ""
-    cap_b_str = f"👑 Captain: @{cap_b}\n" if cap_b else ""
+    cap_a_rec = captains.get("Team A", {})
+    cap_b_rec = captains.get("Team B", {})
 
     idx = 1
     a_lines = []
     for p in team_a:
-        a_lines.append(f"{idx}. <b>{p.get('username', '').lstrip('@')}</b>")
+        a_lines.append(f"{idx}. {format_user_tag(p.get('user_id', 0), p.get('username', 'Player'))}")
         idx += 1
     b_lines = []
     for p in team_b:
-        b_lines.append(f"{idx}. <b>{p.get('username', '').lstrip('@')}</b>")
+        b_lines.append(f"{idx}. {format_user_tag(p.get('user_id', 0), p.get('username', 'Player'))}")
         idx += 1
 
     team_a_lines = "\n".join(a_lines) if a_lines else "None"
     team_b_lines = "\n".join(b_lines) if b_lines else "None"
     overs = target_t.get("max_balls", 36) // 6
-    host_name = (target_t.get("host_username") or "Unassigned").lstrip("@")
-    cap_a_str = f"👑 Captain: <b>{cap_a.lstrip('@')}</b>\n" if cap_a else ""
-    cap_b_str = f"👑 Captain: <b>{cap_b.lstrip('@')}</b>\n" if cap_b else ""
+    host_id = target_t.get("host_id")
+    host_raw = target_t.get("host_username") or "Unassigned"
+    host_str = format_user_tag(host_id, host_raw) if host_id else f"<b>{host_raw.lstrip('@')}</b>"
+    cap_a_str = f"👑 Captain: {format_user_tag(cap_a_rec.get('user_id', 0), cap_a_rec.get('username', ''))}\n" if cap_a_rec.get("username") else ""
+    cap_b_str = f"👑 Captain: {format_user_tag(cap_b_rec.get('user_id', 0), cap_b_rec.get('username', ''))}\n" if cap_b_rec.get("username") else ""
 
     return (
         f"📊 <b>JPL CRICKET BOT • {target_t['name']}</b>\n"
         f"⚙️ Overs: <b>{overs} Overs</b> ({target_t.get('max_balls', 36)} balls) | Wickets: 1\n"
-        f"🛡️ Host: <b>{host_name}</b>\n\n"
+        f"🛡️ Host: {host_str}\n\n"
         f"🔴 <b>TEAM A ({len(team_a)}/11):</b>\n"
         f"{cap_a_str}"
         f"{team_a_lines}\n\n"
@@ -132,6 +131,31 @@ def format_teams_roster_card(target_t: dict, teams_data: dict) -> str:
         f"{team_b_lines}\n\n"
         f"<i>Use /start_match to begin or /swap to substitute!</i>"
     )
+
+
+async def _upsert_host_roster_message(target_t: dict, teams_data: dict, message: Message):
+    """Updates the same single host roster message in-place when players are added/removed/swapped."""
+    roster_card = format_teams_roster_card(target_t, teams_data)
+    tid = target_t["tournament_id"]
+    msg_id = target_t.get("roster_message_id")
+    if isinstance(msg_id, int):
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=msg_id,
+                text=roster_card,
+                parse_mode="HTML"
+            )
+            return
+        except Exception as e:
+            if "message is not modified" in str(e).lower():
+                return
+    sent = await message.answer(roster_card, parse_mode="HTML")
+    if sent and isinstance(getattr(sent, "message_id", None), int):
+        tournaments = await db.load("tournaments")
+        if tid in tournaments:
+            tournaments[tid]["roster_message_id"] = sent.message_id
+            await db.save("tournaments", tournaments)
 
 # --- CLAIM HOST CALLBACK ---
 @router.callback_query(F.data.startswith("claim_host:"))
@@ -144,7 +168,7 @@ async def on_claim_host(callback: CallbackQuery):
         return
 
     user = callback.from_user
-    username = user.username or f"host_{user.id}"
+    username = resolve_player_name(user)
 
     # If host already claimed by someone else
     if t.get("host_id") and t.get("host_id") != user.id and user.id != settings.SUPER_ADMIN_ID:
@@ -205,19 +229,22 @@ async def _handle_team_modify(message: Message, team_name: str, action: str):
         if ok:
             if action == "add":
                 await TournamentService.register_player(tid, uid, uname)
-            succeeded.append(f"@{uname}")
+            succeeded.append(format_user_tag(uid, uname))
         else:
             notes.append(msg)
 
     teams_data = await HostTournamentService.get_teams(tid)
-    roster_card = format_teams_roster_card(t, teams_data)
+    await _upsert_host_roster_message(t, teams_data, message)
 
     icon = "🔴" if team_name == "Team A" else "🔵"
-    verb = "Added to" if action == "add" else "Removed from"
-    header = f"{icon} <b>{verb} {team_name.upper()}:</b> {', '.join(succeeded)}\n" if succeeded else ""
-    note_str = f"⚠️ {' | '.join(notes)}\n" if notes else ""
-
-    await message.answer(f"{header}{note_str}\n{roster_card}", parse_mode="HTML")
+    verb = "joined" if action == "add" else "removed from"
+    parts = []
+    if succeeded:
+        parts.append(f"{icon} {', '.join(succeeded)} {verb} <b>{team_name.upper()}</b>!")
+    if notes:
+        parts.append(f"⚠️ {' | '.join(notes)}")
+    if parts:
+        await message.answer("\n".join(parts), parse_mode="HTML")
 
 @router.message(Command("add_a"))
 async def cmd_add_team_a(message: Message):
@@ -269,8 +296,8 @@ async def cmd_swap_player(message: Message):
 
     await TournamentService.register_player(tid, new_uid, new_uname)
     teams_data = await HostTournamentService.get_teams(tid)
-    roster_card = format_teams_roster_card(t, teams_data)
-    await message.answer(f"🔄 <b>{msg}</b>\n\n{roster_card}", parse_mode="HTML")
+    await _upsert_host_roster_message(t, teams_data, message)
+    await message.answer(f"🔄 {format_user_tag(new_uid, new_uname)} joined via swap! ({msg})", parse_mode="HTML")
 
 @router.message(Command("cap_a"))
 async def cmd_set_cap_a(message: Message):
@@ -286,7 +313,10 @@ async def cmd_set_cap_a(message: Message):
 
     uid, uname = players[0]
     await HostTournamentService.set_captain(t["tournament_id"], "Team A", uid, uname)
-    await message.answer(f"👑 <b>Captain for TEAM A:</b> @{uname}", parse_mode="HTML")
+    if t.get("roster_message_id"):
+        teams_data = await HostTournamentService.get_teams(t["tournament_id"])
+        await _upsert_host_roster_message(t, teams_data, message)
+    await message.answer(f"👑 <b>Captain for TEAM A:</b> {format_user_tag(uid, uname)}", parse_mode="HTML")
 
 @router.message(Command("cap_b"))
 async def cmd_set_cap_b(message: Message):
@@ -302,7 +332,10 @@ async def cmd_set_cap_b(message: Message):
 
     uid, uname = players[0]
     await HostTournamentService.set_captain(t["tournament_id"], "Team B", uid, uname)
-    await message.answer(f"👑 <b>Captain for TEAM B:</b> @{uname}", parse_mode="HTML")
+    if t.get("roster_message_id"):
+        teams_data = await HostTournamentService.get_teams(t["tournament_id"])
+        await _upsert_host_roster_message(t, teams_data, message)
+    await message.answer(f"👑 <b>Captain for TEAM B:</b> {format_user_tag(uid, uname)}", parse_mode="HTML")
 
 @router.message(Command("overs"))
 async def cmd_set_overs(message: Message):

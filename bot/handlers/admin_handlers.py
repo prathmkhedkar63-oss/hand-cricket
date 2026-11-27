@@ -1,5 +1,9 @@
+import asyncio
+import inspect
+import os
 import time
 import uuid
+from typing import List, Optional
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
@@ -187,6 +191,7 @@ async def cmd_messege_push(message: Message, bot: Bot):
             err = str(e).lower()
             if chat_id < 0 and ("forbidden" in err or "chat not found" in err or "kicked" in err):
                 dead_groups.add(chat_id)
+        await asyncio.sleep(0.05)
 
     if dead_groups and isinstance(sys_settings.get("known_groups"), list):
         sys_settings["known_groups"] = [g for g in sys_settings["known_groups"] if g not in dead_groups]
@@ -233,6 +238,146 @@ async def cmd_delete_bot_message(message: Message, bot: Bot):
     except Exception:
         pass
 
+async def _build_system_health_report(bot: Optional[Bot] = None) -> str:
+    """Performs a single lightweight health check across all bot, DB, API, engine, and asset subsystems."""
+    from bot.services.game_service import GameService
+    from bot.services.media_service import MediaService, VIDEOS_DIR
+    from backend.main import app
+
+    issues: List[str] = []
+    sys_settings = await db.load("settings")
+    bot_enabled = bool(sys_settings.get("bot_enabled", True))
+    matchmaking = bool(sys_settings.get("matchmaking_enabled", True))
+    fun_enabled = bool(sys_settings.get("fun_autopost_enabled", True))
+
+    # 1. Telegram API & Transport
+    if bot is not None and callable(getattr(bot, "get_me", None)):
+        try:
+            t0 = time.perf_counter()
+            res = bot.get_me()
+            if inspect.isawaitable(res):
+                await res
+            tg_ms = int((time.perf_counter() - t0) * 1000)
+            tg_line = f"✅ Telegram API: Connected ({tg_ms} ms)"
+        except Exception as e:
+            err = str(e)[:45]
+            tg_line = f"❌ Telegram API: Error ({err})"
+            issues.append(f"Telegram API error: {err}")
+    else:
+        tg_line = "✅ Bot Handler: Active"
+
+    webhook_active = bool(getattr(app.state, "webhook_enabled", False))
+    transport_line = (
+        "✅ Transport: Render HTTPS Webhook"
+        if webhook_active
+        else "✅ Transport: Long Polling"
+    )
+    bot_state_line = "✅ Bot State: Enabled (Accepting Users)" if bot_enabled else "🛑 Bot State: Stopped (Maintenance)"
+    if not bot_enabled:
+        issues.append("Bot is currently stopped (/start_bot to enable)")
+
+    # 2. Database / Supabase PostgreSQL
+    if db.using_external_db:
+        if db._pg_pool is not None:
+            try:
+                t0 = time.perf_counter()
+                async with db._pg_pool.acquire() as conn:
+                    await conn.fetchval("SELECT 1")
+                pg_ms = int((time.perf_counter() - t0) * 1000)
+                db_line = f"✅ Database: Supabase PostgreSQL ({pg_ms} ms)"
+            except Exception as e:
+                db_line = f"❌ Database: PostgreSQL Ping Failed ({str(e)[:35]})"
+                issues.append("PostgreSQL query failed")
+        else:
+            db_line = "⚠️ Database: PostgreSQL Configured (Pool Initializing)"
+            issues.append("PostgreSQL pool not yet initialized")
+    elif db.database_url and db._pg_failed:
+        db_line = "⚠️ Database: Local JSON Fallback (PG Unreachable)"
+        issues.append("External PostgreSQL failed — using Local JSON fallback")
+    else:
+        db_line = "✅ Database: Local Atomic JSON Active"
+
+    # 3. Web Admin API & Frontend
+    api_attached = getattr(app.state, "bot", None) is not None
+    dist_ready = (settings.BASE_DIR / "admin_panel" / "dist" / "index.html").exists()
+    web_parts = [
+        "API Linked" if api_attached else "API Standalone",
+        "UI Built" if dist_ready else "UI Not Built",
+    ]
+    web_line = f"{'✅' if dist_ready else '⚠️'} Web Panel & API: {' • '.join(web_parts)}"
+    if not dist_ready:
+        issues.append("Admin panel frontend dist/index.html missing")
+
+    # 4. Game Engine & Live Sessions
+    active_matches = len(GameService.active_matches)
+    turn_timers = len(GameService._turn_timers)
+    countdowns = len(SoloTournamentService._running_countdowns)
+    engine_line = (
+        f"✅ Game Engine: Ready ({active_matches} Live • {turn_timers} Timers • {countdowns} Countdowns)"
+    )
+    mm_line = "✅ Matchmaking: Open" if matchmaking else "⚠️ Matchmaking: Paused in Settings"
+    if not matchmaking:
+        issues.append("Public matchmaking is disabled in Admin Settings")
+
+    # 5. Media Assets & Scoreboard Image Renderer
+    imgs_total = len(MediaService.IMAGES)
+    imgs_ok = sum(1 for p in MediaService.IMAGES.values() if p.exists())
+    all_clips = {clip for clips in MediaService.VIDEOS.values() for clip in clips}
+    clips_ok = sum(1 for clip in all_clips if (VIDEOS_DIR / clip).exists())
+    try:
+        from game_engine.scoreboard_image import ScoreboardImageGenerator  # noqa: F401
+        pillow_ok = True
+    except Exception:
+        pillow_ok = False
+    media_ok = (imgs_ok == imgs_total) and (clips_ok == len(all_clips)) and pillow_ok
+    media_line = (
+        f"{'✅' if media_ok else '⚠️'} Media & Pillow: "
+        f"{imgs_ok}/{imgs_total} Images • {clips_ok}/{len(all_clips)} MP4s • "
+        f"{'Pillow OK' if pillow_ok else 'Pillow Missing'}"
+    )
+    if not media_ok:
+        issues.append("Some media assets or Pillow renderer unavailable")
+
+    # 6. Auto-Poster & Counts
+    users = await db.load("users")
+    tournaments = await db.load("tournaments")
+    matches = await db.load("matches")
+    known_groups = len(sys_settings.get("known_groups", []))
+    keep_alive_set = bool(
+        os.environ.get("KEEP_ALIVE_URL")
+        or os.environ.get("RENDER_EXTERNAL_URL")
+        or os.environ.get("SPACE_HOST")
+    )
+    bg_line = (
+        f"✅ Background: Fun Poster {'On (3h)' if fun_enabled else 'Off'} • "
+        f"Keep-Alive {'On' if keep_alive_set else 'Local'}"
+    )
+
+    verdict = (
+        "🟢 <b>All Systems Running Normally!</b>"
+        if not issues
+        else "⚠️ <b>Attention Needed:</b>\n" + "\n".join(f"  • {item}" for item in issues)
+    )
+
+    return (
+        f"🖥️ <b>SYSTEM HEALTH CHECK</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"{bot_state_line}\n"
+        f"{tg_line}\n"
+        f"{transport_line}\n"
+        f"{db_line}\n"
+        f"{web_line}\n"
+        f"{engine_line}\n"
+        f"{mm_line}\n"
+        f"{media_line}\n"
+        f"{bg_line}\n"
+        f"📊 Data: <b>{len(users)}</b> Players • <b>{known_groups}</b> Groups • "
+        f"<b>{len(tournaments)}</b> Cups • <b>{len(matches)}</b> Matches\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"{verdict}"
+    )
+
+
 @router.message(Command("start_bot"))
 async def cmd_start_bot(message: Message):
     if not is_super_admin(message.from_user.id, message.from_user.username):
@@ -250,7 +395,13 @@ async def cmd_start_bot(message: Message):
         "target": "system",
         "timestamp": time.time()
     })
-    await message.answer("✅ <b>BOT STARTED!</b>\n\nThe bot is now active and accepting commands from all players.", parse_mode="HTML")
+    health_report = await _build_system_health_report(getattr(message, "bot", None))
+    await message.answer(
+        f"✅ <b>BOT STARTED!</b>\n"
+        f"The bot is now active and accepting commands from all players.\n\n"
+        f"{health_report}",
+        parse_mode="HTML"
+    )
 
 @router.message(Command("stop_bot"))
 async def cmd_stop_bot(message: Message, bot: Bot):
@@ -516,21 +667,8 @@ async def cmd_systemstats(message: Message):
     if not await is_admin(message.from_user.id, message.from_user.username):
         return
 
-    users = await db.load("users")
-    tournaments = await db.load("tournaments")
-    matches = await db.load("matches")
-    balls = await db.load("ball_history")
-
-    text = (
-        f"📈 <b>SYSTEM TELEMETRY & STATS</b>\n\n"
-        f"👤 Registered Players: <b>{len(users)}</b>\n"
-        f"🏆 Tournaments: <b>{len(tournaments)}</b>\n"
-        f"⚔️ Matches Recorded: <b>{len(matches)}</b>\n"
-        f"🏏 Total Deliveries Bowled: <b>{len(balls)}</b>\n"
-        f"💾 Storage Engine: Atomic JSON with File Locking\n"
-        f"🛡️ Status: Operational & Healthy"
-    )
-    await message.answer(text, parse_mode="HTML")
+    report = await _build_system_health_report(getattr(message, "bot", None))
+    await message.answer(report, parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("admin:"))
 async def on_admin_callback(callback: CallbackQuery):

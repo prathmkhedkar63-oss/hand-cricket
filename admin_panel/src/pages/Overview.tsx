@@ -1,11 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../services/api';
 import { SystemOverview } from '../types';
-import { Users, Swords, Trophy, ShieldAlert, Activity, CheckCircle, Flame } from 'lucide-react';
+import { Users, Swords, Trophy, ShieldAlert, Activity, CheckCircle, Flame, Send } from 'lucide-react';
 
 export const Overview: React.FC = () => {
   const [data, setData] = useState<SystemOverview | null>(null);
   const [loading, setLoading] = useState(true);
+  const [broadcastText, setBroadcastText] = useState('');
+  const [broadcastTarget, setBroadcastTarget] = useState<'all' | 'groups' | 'dms'>('all');
+  const [sending, setSending] = useState(false);
+  const [broadcastStatus, setBroadcastStatus] = useState('');
 
   useEffect(() => {
     loadOverview();
@@ -20,6 +24,23 @@ export const Overview: React.FC = () => {
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleBroadcast = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!broadcastText.trim()) return;
+    try {
+      setSending(true);
+      setBroadcastStatus('Sending...');
+      const res = await api.broadcast({ message: broadcastText.trim(), target: broadcastTarget });
+      setBroadcastText('');
+      setBroadcastStatus(`Sent to ${res.dm_sent} DMs & ${res.group_sent} groups (${res.failed} failed).`);
+      setTimeout(() => setBroadcastStatus(''), 5000);
+    } catch (err: any) {
+      setBroadcastStatus(`Error: ${err.message}`);
+    } finally {
+      setSending(false);
     }
   };
 
@@ -77,7 +98,15 @@ export const Overview: React.FC = () => {
           <div className="space-y-4 text-sm text-slate-300">
             <div className="flex justify-between items-center py-2.5 border-b border-slate-800/60">
               <span className="text-slate-400">Database Engine</span>
-              <span className="text-emerald-400 font-semibold font-mono">Atomic JSON (15 Files Synced)</span>
+              <span className="text-emerald-400 font-semibold font-mono">
+                {data.storage_label || 'Atomic JSON (15 Files Synced)'}
+              </span>
+            </div>
+            <div className="flex justify-between items-center py-2.5 border-b border-slate-800/60">
+              <span className="text-slate-400">Telegram Transport</span>
+              <span className="text-emerald-400 font-semibold font-mono uppercase">
+                {data.bot_mode === 'webhook' ? 'Render HTTPS Webhook (Zero Conflict)' : 'Long Polling'}
+              </span>
             </div>
             <div className="flex justify-between items-center py-2.5 border-b border-slate-800/60">
               <span className="text-slate-400">Gameplay Delivery Channel</span>
@@ -96,17 +125,43 @@ export const Overview: React.FC = () => {
 
         <div className="bg-[#0f1422] border border-slate-800 rounded-xl p-6 shadow-lg flex flex-col justify-between">
           <div>
-            <h3 className="text-base font-bold text-white font-heading uppercase tracking-wider mb-4">
-              Quick Admin Actions
+            <h3 className="text-base font-bold text-white font-heading uppercase tracking-wider mb-3">
+              Quick Broadcast
             </h3>
-            <p className="text-xs text-slate-400 leading-relaxed">
-              Create and manage tournaments, monitor live ball deliveries, override dispute matches, and export system backups directly from this console.
-            </p>
+            <form onSubmit={handleBroadcast} className="space-y-2.5">
+              <select
+                value={broadcastTarget}
+                onChange={(e) => setBroadcastTarget(e.target.value as 'all' | 'groups' | 'dms')}
+                className="w-full bg-[#0a0d14] border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+              >
+                <option value="all">All Chats (DMs + Groups)</option>
+                <option value="groups">Groups Only</option>
+                <option value="dms">Direct Messages Only</option>
+              </select>
+              <textarea
+                rows={3}
+                value={broadcastText}
+                onChange={(e) => setBroadcastText(e.target.value)}
+                placeholder="Type announcement to push to Telegram..."
+                className="w-full bg-[#0a0d14] border border-slate-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500 resize-none"
+              />
+              <button
+                type="submit"
+                disabled={sending || !broadcastText.trim()}
+                className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold uppercase tracking-wider flex items-center justify-center gap-2 transition"
+              >
+                <Send className="w-3.5 h-3.5" />
+                {sending ? 'Broadcasting...' : 'Push Announcement'}
+              </button>
+              {broadcastStatus && (
+                <p className="text-[11px] text-emerald-400">{broadcastStatus}</p>
+              )}
+            </form>
           </div>
-          <div className="space-y-2 mt-6">
+          <div className="space-y-2 mt-4 pt-3 border-t border-slate-800/80">
             <button
               onClick={loadOverview}
-              className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold uppercase tracking-wider transition"
+              className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold uppercase tracking-wider transition"
             >
               Sync Telemetry
             </button>

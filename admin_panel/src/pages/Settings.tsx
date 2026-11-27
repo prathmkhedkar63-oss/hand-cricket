@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../services/api';
-import { Save, Database } from 'lucide-react';
+import { Save, Database, Download } from 'lucide-react';
 
 export const Settings: React.FC = () => {
   const [settings, setSettings] = useState<any>({
@@ -141,23 +141,32 @@ export const Settings: React.FC = () => {
       </form>
 
       {/* Database Backup Box */}
-      <div className="bg-[#0f1422] border border-slate-800 rounded-xl p-6 shadow-lg flex items-center justify-between">
+      <div className="bg-[#0f1422] border border-slate-800 rounded-xl p-6 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h4 className="text-sm font-bold text-white font-heading uppercase">
-            Create JSON Database Backup
+            Database Backup & Export
           </h4>
           <p className="text-xs text-slate-400 mt-0.5">
-            Atomically archives all 15 JSON tables to the persistent `/data/backups` directory
+            Save a server snapshot or download all 15 live tables as a portable JSON bundle
           </p>
           {backupMsg && <p className="text-xs text-emerald-400 mt-2">{backupMsg}</p>}
         </div>
-        <button
-          onClick={handleBackup}
-          className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold uppercase tracking-wider transition"
-        >
-          <Database className="w-4 h-4" />
-          Create Snapshot
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleBackup}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold uppercase tracking-wider transition"
+          >
+            <Database className="w-4 h-4" />
+            Snapshot
+          </button>
+          <button
+            onClick={() => api.downloadBackup().catch((err: any) => alert(err.message))}
+            className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold uppercase tracking-wider transition"
+          >
+            <Download className="w-4 h-4" />
+            Download JSON
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -204,16 +204,24 @@ export const Players: React.FC = () => {
                 <span>{selectedPlayer.statistics.highest_score}</span>
               </div>
               <div className="flex justify-between border-b border-slate-800 pb-2">
-                <span className="text-slate-400">Batting Average:</span>
-                <span>{selectedPlayer.statistics.batting_average}</span>
+                <span className="text-slate-400">Batting Avg / Strike Rate:</span>
+                <span>{selectedPlayer.statistics.batting_average} / {selectedPlayer.statistics.strike_rate ?? 0}</span>
+              </div>
+              <div className="flex justify-between border-b border-slate-800 pb-2">
+                <span className="text-slate-400">Boundaries (4s / 6s):</span>
+                <span>{selectedPlayer.statistics.fours ?? 0} / {selectedPlayer.statistics.sixes ?? 0}</span>
+              </div>
+              <div className="flex justify-between border-b border-slate-800 pb-2">
+                <span className="text-slate-400">Bowling (Wkts / Econ):</span>
+                <span>{selectedPlayer.statistics.wickets_taken ?? 0} wkts ({selectedPlayer.statistics.economy_rate ?? 0})</span>
               </div>
               <div className="flex justify-between border-b border-slate-800 pb-2">
                 <span className="text-slate-400">Current / Max Streak:</span>
                 <span>{selectedPlayer.statistics.current_streak} / {selectedPlayer.statistics.highest_streak}</span>
               </div>
               <div className="flex justify-between border-b border-slate-800 pb-2">
-                <span className="text-slate-400">Tournaments Won:</span>
-                <span className="text-amber-400 font-semibold">{selectedPlayer.statistics.tournament_victories}</span>
+                <span className="text-slate-400">MOTM / Tournaments Won:</span>
+                <span className="text-amber-400 font-semibold">{selectedPlayer.statistics.motm_awards ?? 0} / {selectedPlayer.statistics.tournament_victories}</span>
               </div>
               {selectedPlayer.user.is_banned && (
                 <div className="p-3 bg-red-950/40 border border-red-900 rounded-lg text-red-300 text-xs">

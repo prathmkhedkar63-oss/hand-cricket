@@ -83,13 +83,16 @@ def get_leaderboard_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🏆 Wins", callback_data="lb:wins"),
-            InlineKeyboardButton(text="🏏 Runs", callback_data="lb:runs")
+            InlineKeyboardButton(text="🏏 Runs", callback_data="lb:runs"),
+            InlineKeyboardButton(text="🌟 High Score", callback_data="lb:high")
         ],
         [
-            InlineKeyboardButton(text="🌟 High Score", callback_data="lb:high"),
-            InlineKeyboardButton(text="🔥 Win %", callback_data="lb:winpct")
+            InlineKeyboardButton(text="🎯 Wickets", callback_data="lb:wickets"),
+            InlineKeyboardButton(text="💥 Sixes", callback_data="lb:sixes"),
+            InlineKeyboardButton(text="🏅 MOTM", callback_data="lb:motm")
         ],
         [
+            InlineKeyboardButton(text="🔥 Win %", callback_data="lb:winpct"),
             InlineKeyboardButton(text="⚡ Streak", callback_data="lb:streak"),
             InlineKeyboardButton(text="⬅️ Main Menu", callback_data="hub:main")
         ]

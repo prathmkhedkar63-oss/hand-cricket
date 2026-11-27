@@ -214,3 +214,52 @@ async def test_admin_delete_bot_message():
     await cmd_delete_bot_message(fail_msg, failing_bot)
     assert "Could not delete message" in fail_msg.answer.call_args[0][0]
     fail_msg.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_bot_single_system_health_check():
+    from unittest.mock import AsyncMock, MagicMock
+    from bot.handlers.admin_handlers import cmd_start_bot, cmd_systemstats
+    from config.settings import settings
+    from database.json_manager import db
+
+    mock_bot = AsyncMock()
+    mock_bot.get_me = AsyncMock(return_value=MagicMock(username="IPL_CS_BOT"))
+
+    start_msg = MagicMock()
+    start_msg.from_user = MagicMock(id=999001, username=settings.SUPER_ADMIN_USERNAME.lstrip("@"))
+    start_msg.bot = mock_bot
+    start_msg.answer = AsyncMock()
+
+    await cmd_start_bot(start_msg)
+    start_msg.answer.assert_awaited_once()
+    report = start_msg.answer.call_args[0][0]
+    assert "BOT STARTED!" in report
+    assert "SYSTEM HEALTH CHECK" in report
+    assert "Telegram API: Connected" in report
+    assert "Database:" in report
+    assert "Web Panel & API:" in report
+    assert "Game Engine:" in report
+    assert "Media & Pillow:" in report
+
+    # Simulate broken PG + failing Telegram ping -> warnings appear cleanly in single check
+    old_url, old_failed = db.database_url, db._pg_failed
+    try:
+        db.database_url = "postgresql://broken"
+        db._pg_failed = True
+        bad_bot = AsyncMock()
+        bad_bot.get_me = AsyncMock(side_effect=RuntimeError("network unreachable"))
+
+        stat_msg = MagicMock()
+        stat_msg.from_user = MagicMock(id=999001, username=settings.SUPER_ADMIN_USERNAME.lstrip("@"))
+        stat_msg.bot = bad_bot
+        stat_msg.answer = AsyncMock()
+        await cmd_systemstats(stat_msg)
+        stat_msg.answer.assert_awaited_once()
+        warn_report = stat_msg.answer.call_args[0][0]
+        assert "Telegram API: Error" in warn_report
+        assert "Local JSON Fallback" in warn_report
+        assert "Attention Needed" in warn_report
+    finally:
+        db.database_url = old_url
+        db._pg_failed = old_failed

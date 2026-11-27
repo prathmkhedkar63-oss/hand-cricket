@@ -40,6 +40,32 @@ async def run_bot(bot: Bot, dp):
     from bot.services.game_service import GameService
     await GameService.recover_active_matches()
     await SoloTournamentService.recover_active_countdowns(bot)
+
+    webhook_url = settings.resolve_webhook_url()
+    if webhook_url:
+        secret = settings.resolve_webhook_secret()
+        app.state.webhook_secret = secret
+        await asyncio.sleep(2)
+        registered = False
+        for attempt in range(1, 4):
+            try:
+                await bot.set_webhook(url=webhook_url, secret_token=secret, drop_pending_updates=False)
+                app.state.webhook_enabled = True
+                registered = True
+                logger.info(f"Telegram Webhook enabled: {webhook_url}")
+                break
+            except Exception as e:
+                logger.warning(f"Webhook registration attempt {attempt}/3 failed: {e}")
+                await asyncio.sleep(3)
+        if registered:
+            return
+        logger.warning("Falling back to Telegram long polling after webhook registration failures.")
+
+    app.state.webhook_enabled = False
+    try:
+        await bot.delete_webhook(drop_pending_updates=False)
+    except Exception:
+        pass
     logger.info("Starting Telegram Bot Polling...")
     await dp.start_polling(bot)
 
@@ -75,8 +101,12 @@ async def main():
     ext_connected = await db.init_external_db()
     logger.info(f"Database ready (mode={'postgresql' if ext_connected else 'local_json'}).")
 
-    # 2. Setup Bot
+    # 2. Setup Bot and attach to FastAPI state for Webhook + Admin Broadcast
     bot, dp = setup_bot()
+    app.state.bot = bot
+    app.state.dp = dp
+    app.state.webhook_secret = settings.resolve_webhook_secret()
+    app.state.webhook_enabled = bool(settings.resolve_webhook_url())
 
     # 3. Concurrently run FastAPI Admin API, Aiogram Bot, Keep-Alive Pinger, and 3h Cricket Fun Poster
     from bot.services.cricket_fun_service import CricketFunService

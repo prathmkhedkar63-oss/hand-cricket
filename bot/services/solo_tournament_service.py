@@ -4,6 +4,7 @@ import logging
 from typing import Optional, Dict, Any, List, Tuple
 from database.json_manager import db
 from bot.services.tournament_service import TournamentService
+from bot.services.stats_service import format_user_tag
 from bot.keyboards.game_keyboards import get_tournament_register_keyboard
 from config.settings import settings
 
@@ -18,6 +19,95 @@ class SoloTournamentService:
     - Automatic champion announcement
     """
     _running_countdowns: Dict[str, asyncio.Task] = {}
+    _last_refresh_ts: Dict[str, float] = {}
+    _pending_refresh_tasks: Dict[str, asyncio.Task] = {}
+    REFRESH_DEBOUNCE_SECONDS: float = 1.5
+
+    @staticmethod
+    def build_countdown_caption(t: Dict[str, Any], participants: List[Dict[str, Any]], time_str: str) -> str:
+        player_lines = "\n".join(
+            [f"{i}. {format_user_tag(p['user_id'], p['username'])}" for i, p in enumerate(participants, 1)]
+        ) or "None yet"
+        return (
+            f"🏏 <b>JPL CRICKET BOT • SOLO TOURNAMENT</b>\n\n"
+            f"🏆 <b>{t['name']}</b>\n"
+            f"🔢 Numbers: <b>1 to 6</b> | ⏱️ Turn Timer: <b>60s</b>\n"
+            f"👥 Joined Players (<b>{len(participants)}</b>):\n"
+            f"{player_lines}\n\n"
+            f"⏳ Starts in: <b>{time_str}</b>"
+        )
+
+    @classmethod
+    async def _do_refresh_countdown_message(cls, tournament_id: str, bot_instance) -> bool:
+        """Executes the in-place Telegram message edit for the solo countdown banner."""
+        cls._last_refresh_ts[tournament_id] = time.monotonic()
+        tournaments = await db.load("tournaments")
+        t = tournaments.get(tournament_id)
+        if not t or t.get("status") not in ["registration", "countdown"]:
+            return False
+        msg_id = t.get("countdown_message_id")
+        chat_id = t.get("group_chat_id")
+        if not isinstance(msg_id, int) or not chat_id:
+            return False
+
+        end_time = t.get("countdown_end_time") or time.time()
+        remaining = max(0, int(end_time - time.time()))
+        mins, secs = divmod(remaining, 60)
+        time_str = f"{mins:02d}:{secs:02d}"
+
+        participants = await TournamentService.get_tournament_participants(tournament_id)
+        caption = cls.build_countdown_caption(t, participants, time_str)
+        kb = get_tournament_register_keyboard(tournament_id)
+
+        for method_name, arg_name in (("edit_message_caption", "caption"), ("edit_message_text", "text")):
+            try:
+                fn = getattr(bot_instance, method_name)
+                await fn(chat_id=chat_id, message_id=msg_id, **{arg_name: caption}, reply_markup=kb, parse_mode="HTML")
+                return True
+            except Exception as e:
+                if "message is not modified" in str(e).lower():
+                    return True
+                continue
+        return False
+
+    @classmethod
+    async def refresh_countdown_message(cls, tournament_id: str, bot_instance) -> bool:
+        """
+        Edits the single solo countdown banner in-place whenever a player joins or leaves.
+        Leading call runs immediately; rapid bursts within 1.5s coalesce into one trailing edit.
+        """
+        now = time.monotonic()
+        last_ts = cls._last_refresh_ts.get(tournament_id, 0.0)
+        elapsed = now - last_ts
+
+        if elapsed >= cls.REFRESH_DEBOUNCE_SECONDS:
+            pending = cls._pending_refresh_tasks.pop(tournament_id, None)
+            if pending and not pending.done():
+                pending.cancel()
+            return await cls._do_refresh_countdown_message(tournament_id, bot_instance)
+
+        existing = cls._pending_refresh_tasks.get(tournament_id)
+        if existing and not existing.done():
+            return True
+
+        delay = max(0.05, cls.REFRESH_DEBOUNCE_SECONDS - elapsed)
+
+        async def _trailing_refresh():
+            try:
+                await asyncio.sleep(delay)
+                cls._pending_refresh_tasks.pop(tournament_id, None)
+                await cls._do_refresh_countdown_message(tournament_id, bot_instance)
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(f"Trailing countdown refresh error for {tournament_id}: {e}")
+
+        try:
+            asyncio.get_running_loop()
+            cls._pending_refresh_tasks[tournament_id] = asyncio.create_task(_trailing_refresh())
+            return True
+        except RuntimeError:
+            return await cls._do_refresh_countdown_message(tournament_id, bot_instance)
 
     @classmethod
     async def start_countdown(cls, tournament_id: str, bot_instance, group_chat_id: int):
@@ -46,18 +136,8 @@ class SoloTournamentService:
         if tournament_id in cls._running_countdowns:
             cls._running_countdowns[tournament_id].cancel()
 
-        # Announce start of countdown cleanly (no internal IDs, no @ pings)
-        player_lines = "\n".join(
-            [f"{i}. <b>{p['username'].lstrip('@')}</b>" for i, p in enumerate(participants, 1)]
-        ) or "None yet"
-        announcement = (
-            f"🏏 <b>JPL CRICKET BOT • SOLO TOURNAMENT</b>\n\n"
-            f"🏆 <b>{t['name']}</b>\n"
-            f"🔢 Numbers: <b>1 to 6</b> | ⏱️ Turn Timer: <b>60s</b>\n"
-            f"👥 Joined Players (<b>{len(participants)}</b>):\n"
-            f"{player_lines}\n\n"
-            f"⏳ Starts in: <b>02:00</b>"
-        )
+        # Announce start of countdown cleanly with clickable profile names
+        announcement = cls.build_countdown_caption(t, participants, "02:00")
         try:
             from bot.services.media_service import MediaService
             msg = await MediaService.send_with_image(
@@ -200,17 +280,7 @@ class SoloTournamentService:
 
                         if m in edit_milestones and isinstance(msg_id, int):
                             participants = await TournamentService.get_tournament_participants(tournament_id)
-                            player_lines = "\n".join(
-                                [f"{i}. <b>{p['username'].lstrip('@')}</b>" for i, p in enumerate(participants, 1)]
-                            ) or "None yet"
-                            caption = (
-                                f"🏏 <b>JPL CRICKET BOT • SOLO TOURNAMENT</b>\n\n"
-                                f"🏆 <b>{t['name']}</b>\n"
-                                f"🔢 Numbers: <b>1 to 6</b> | ⏱️ Turn Timer: <b>60s</b>\n"
-                                f"👥 Joined Players (<b>{len(participants)}</b>):\n"
-                                f"{player_lines}\n\n"
-                                f"⏳ Starts in: <b>{time_str}</b>"
-                            )
+                            caption = cls.build_countdown_caption(t, participants, time_str)
                             kb = get_tournament_register_keyboard(tournament_id)
                             edited = False
                             for method_name, arg_name in (("edit_message_caption", "caption"), ("edit_message_text", "text")):

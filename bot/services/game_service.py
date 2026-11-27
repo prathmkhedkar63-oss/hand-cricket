@@ -99,7 +99,7 @@ class GameService:
                 continue
 
     @classmethod
-    async def cleanup_match_db(cls, match_id: str, max_completed_matches: int = 50):
+    async def cleanup_match_db(cls, match_id: str, max_completed_matches: int = 20):
         """
         Auto-deletes ball_history records for a completed match and prunes old
         completed matches beyond max_completed_matches so RAM/disk stay lean.
@@ -573,7 +573,8 @@ class GameService:
         should_flush = is_over_end or is_innings_break or is_match_end
 
         if should_flush:
-            await cls.flush_pending_balls()
+            if not is_match_end:
+                await cls.flush_pending_balls()
             await cls.save_match(match, flush_disk=True)
         else:
             await cls.save_match(match, flush_disk=False)
@@ -625,7 +626,7 @@ class GameService:
                         from game_engine.scoreboard_image import ScoreboardImageGenerator
                         inn_obj = match.first_innings if ball.innings_num == 1 else match.second_innings
                         if inn_obj:
-                            over_bytes = ScoreboardImageGenerator.render_over_card(match, inn_obj)
+                            over_bytes = await asyncio.to_thread(ScoreboardImageGenerator.render_over_card, match, inn_obj)
                             new_sb = await MediaService.send_generated_image(
                                 bot, match.group_chat_id, over_bytes, "over_summary.jpg", sb_text
                             )
@@ -635,7 +636,7 @@ class GameService:
                         new_sb = await bot.send_message(chat_id=match.group_chat_id, text=sb_text, parse_mode="HTML")
                     if new_sb and isinstance(getattr(new_sb, "message_id", None), int):
                         match.group_scoreboard_msg_id = new_sb.message_id
-                        await cls.save_match(match)
+                        await cls.save_match(match, flush_disk=False)
                 except Exception as e:
                     logger.error(f"Over scoreboard error, falling back to text: {e}")
                     try:
@@ -717,7 +718,7 @@ class GameService:
                     )
                     from game_engine.scoreboard_image import ScoreboardImageGenerator
                     from bot.keyboards.game_keyboards import get_match_end_keyboard
-                    card_bytes = ScoreboardImageGenerator.render_match_card(match)
+                    card_bytes = await asyncio.to_thread(ScoreboardImageGenerator.render_match_card, match)
                     await MediaService.send_generated_image(
                         bot,
                         match.group_chat_id,
@@ -781,6 +782,7 @@ class GameService:
                 uid_str = str(match.winner_id)
                 if uid_str in stats:
                     stats[uid_str]["tournament_victories"] = stats[uid_str].get("tournament_victories", 0) + 1
+                    StatsService.evaluate_badges(stats[uid_str])
                     await db.save("statistics", stats)
 
                 champ_text = (
@@ -833,6 +835,7 @@ class GameService:
                     uid_str = str(champ["user_id"])
                     if uid_str in stats:
                         stats[uid_str]["tournament_victories"] = stats[uid_str].get("tournament_victories", 0) + 1
+                        StatsService.evaluate_badges(stats[uid_str])
                         await db.save("statistics", stats)
 
                     champ_text = (

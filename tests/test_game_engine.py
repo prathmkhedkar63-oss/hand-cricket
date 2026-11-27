@@ -452,3 +452,83 @@ async def test_anti_pm_lockout_hidden_bowler_no_score_in_commentary_and_45s_ping
     assert any("15s left" in txt for txt in sent_texts)
     assert any("TURN TIMEOUT" in txt for txt in sent_texts)
     GameService.cleanup_match_cache(m_timer.match_id)
+
+
+@pytest.mark.asyncio
+async def test_allrounder_stats_motm_badges_and_reply_lookup():
+    import random
+    import uuid
+    from unittest.mock import AsyncMock, MagicMock
+    from database.json_manager import db
+    from bot.services.stats_service import StatsService
+    from bot.handlers.player_handlers import cmd_stats, _build_profile_text, on_leaderboard_category
+
+    base = random.randint(20_000_000, 80_000_000)
+    p1, p2 = base, base + 1
+    await StatsService.get_or_create_user(p1, "AllRoundOne", "AllRoundOne")
+    await StatsService.get_or_create_user(p2, "PaceTwo", "PaceTwo")
+
+    m = GameEngine.create_match(f"m_ar_{uuid.uuid4().hex[:5]}", p1, "AllRoundOne", p2, "PaceTwo", max_balls=60)
+    # p1 bats first, scores 54 (nine 6s) then gets bowled
+    for _ in range(9):
+        GameEngine.record_bowler_choice(m, p2, 1)
+        GameEngine.record_batsman_choice(m, p1, 6)
+    GameEngine.record_bowler_choice(m, p2, 4)
+    GameEngine.record_batsman_choice(m, p1, 4)
+
+    # p2 chases 55 and gets bowled on 0 -> p1 wins with 54 runs + 1 wicket!
+    GameEngine.record_bowler_choice(m, p1, 5)
+    GameEngine.record_batsman_choice(m, p2, 5)
+
+    try:
+        await StatsService.update_match_stats(m)
+        assert m.motm_id == p1
+        assert m.motm_username == "AllRoundOne"
+
+        stats = await db.load("statistics")
+        s1 = stats[str(p1)]
+        s2 = stats[str(p2)]
+        assert s1["total_runs"] == 54
+        assert s1["sixes"] == 9
+        assert s1["fifties"] == 1
+        assert s1["wickets_taken"] == 1
+        assert s1["balls_faced"] == 10
+        assert s1["strike_rate"] > 0
+        assert s1["motm_awards"] == 1
+        assert "first_win" in s1["badges"]
+        assert "half_century" in s1["badges"]
+        assert s2["wickets_taken"] == 1
+        assert s2["ducks"] == 1
+
+        # Profile text includes badges & all-rounder stats
+        prof = await _build_profile_text(p1)
+        assert "Half-Centurion" in prof
+        assert "MOTM" in prof
+
+        # Reply /stats looks up the replied player's all-rounder stats
+        reply_msg = MagicMock()
+        reply_msg.from_user = MagicMock(id=p2, username="PaceTwo")
+        reply_msg.text = "/stats"
+        reply_msg.reply_to_message = MagicMock(from_user=MagicMock(id=p1))
+        reply_msg.answer = AsyncMock()
+        await cmd_stats(reply_msg)
+        reply_msg.answer.assert_awaited_once()
+        card_text = reply_msg.answer.call_args[0][0]
+        assert "AllRoundOne" in card_text and "Econ" in card_text
+
+        # Leaderboard wickets & sixes tabs work with clickable tags
+        await StatsService.refresh_leaderboards()
+        cb = MagicMock()
+        cb.data = "lb:sixes"
+        cb.message = MagicMock(text="old", edit_text=AsyncMock())
+        cb.answer = AsyncMock()
+        await on_leaderboard_category(cb)
+        cb.message.edit_text.assert_awaited_once()
+        assert "Sixes" in cb.message.edit_text.call_args[0][0]
+    finally:
+        # Clean synthetic test players from shared local DB
+        for tbl in ("users", "statistics"):
+            tbl_data = await db.load(tbl)
+            tbl_data.pop(str(p1), None)
+            tbl_data.pop(str(p2), None)
+            await db.save(tbl, tbl_data)

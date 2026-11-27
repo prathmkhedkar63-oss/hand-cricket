@@ -16,6 +16,18 @@ export interface PlayerStats {
   total_runs: number;
   highest_score: number;
   batting_average: number;
+  balls_faced?: number;
+  fours?: number;
+  sixes?: number;
+  fifties?: number;
+  hundreds?: number;
+  strike_rate?: number;
+  wickets_taken?: number;
+  balls_bowled?: number;
+  runs_conceded?: number;
+  economy_rate?: number;
+  motm_awards?: number;
+  badges?: string[];
   win_percentage: number;
   current_streak: number;
   highest_streak: number;
@@ -96,6 +108,9 @@ export interface SystemOverview {
   total_hosts: number;
   daily_activity: number;
   monthly_activity: number;
+  storage_mode?: 'postgresql' | 'json';
+  storage_label?: string;
+  bot_mode?: 'webhook' | 'polling';
 }
 
 export interface AuditLog {

@@ -196,6 +196,11 @@ class ScoreboardFormatter:
                 )
             winner_clean = (match.winner_username or "Champion").lstrip("@")
             res_clean = (match.result_text or "").replace("@", "")
+            motm_line = (
+                f"\n🏅 <b>Man of the Match:</b> <b>{match.motm_username.lstrip('@')}</b>"
+                if match.motm_username
+                else ""
+            )
             return (
                 f"📋 <b>JPL CRICKET BOT • SOLO SUMMARY</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -203,6 +208,7 @@ class ScoreboardFormatter:
                 + f"\n━━━━━━━━━━━━━━━━━━━━\n"
                 f"🏆 <b>Champion:</b> <b>{winner_clean}</b>\n"
                 f"📝 {res_clean}"
+                f"{motm_line}"
             )
         def _inn_line(inn: Optional[InningsState], label: str) -> str:
             if not inn:
@@ -230,7 +236,10 @@ class ScoreboardFormatter:
         elif match.winner_id == match.player2_id:
             p2_score += 20
 
-        motm = (match.player1_username if p1_score >= p2_score else match.player2_username).lstrip("@")
+        if match.motm_username:
+            motm = match.motm_username.lstrip("@")
+        else:
+            motm = (match.player1_username if p1_score >= p2_score else match.player2_username).lstrip("@")
         p1_clean = match.player1_username.lstrip("@")
         p2_clean = match.player2_username.lstrip("@")
         winner_clean = (match.winner_username or "Tie").lstrip("@")

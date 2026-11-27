@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import os
 from typing import Optional
 from pathlib import Path
@@ -11,6 +13,12 @@ class Settings(BaseSettings):
     SUPER_ADMIN_USERNAME: str = "prathamesh63"
     # Default Telegram Group ID (Optional - tournaments automatically bind to whichever group they are run in)
     DEFAULT_GROUP_ID: Optional[int] = None
+
+    # Webhook vs Polling ('auto' uses RENDER_EXTERNAL_URL/WEBHOOK_URL when set, or 'true'/'false')
+    USE_WEBHOOK: str = os.environ.get("USE_WEBHOOK", "auto")
+    WEBHOOK_URL: Optional[str] = os.environ.get("WEBHOOK_URL")
+    WEBHOOK_PATH: str = os.environ.get("WEBHOOK_PATH", "/telegram/webhook")
+    WEBHOOK_SECRET: Optional[str] = os.environ.get("WEBHOOK_SECRET")
 
     # Backend API
     API_HOST: str = "0.0.0.0"
@@ -36,6 +44,33 @@ class Settings(BaseSettings):
     DEFAULT_WICKETS_LIMIT: int = 1
     DEFAULT_MAX_BALLS: int = 36  # 6 overs per innings default, 0 for unlimited until out
     SOLO_TOURNAMENT_COUNTDOWN_SECONDS: int = 120
+
+    def resolve_webhook_url(self) -> Optional[str]:
+        """Returns full public HTTPS webhook URL when webhook mode is active, else None."""
+        mode = (self.USE_WEBHOOK or "auto").strip().lower()
+        if mode in {"0", "false", "no", "polling"}:
+            return None
+        path = self.WEBHOOK_PATH if self.WEBHOOK_PATH.startswith("/") else f"/{self.WEBHOOK_PATH}"
+        explicit = (self.WEBHOOK_URL or "").strip()
+        if explicit:
+            if explicit.endswith(path):
+                return explicit
+            return f"{explicit.rstrip('/')}{path}"
+        render_url = (os.environ.get("RENDER_EXTERNAL_URL") or "").strip()
+        if render_url and mode in {"auto", "1", "true", "yes", "webhook"}:
+            return f"{render_url.rstrip('/')}{path}"
+        return None
+
+    def resolve_webhook_secret(self) -> str:
+        """Stable deterministic Telegram secret_token so zero-downtime Render containers match."""
+        if self.WEBHOOK_SECRET and self.WEBHOOK_SECRET.strip():
+            return self.WEBHOOK_SECRET.strip()
+        digest = hmac.new(
+            self.SECRET_KEY.encode("utf-8"),
+            self.BOT_TOKEN.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return digest[:48]
 
     model_config = {
         "env_file": ".env",

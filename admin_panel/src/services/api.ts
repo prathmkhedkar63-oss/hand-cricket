@@ -71,4 +71,29 @@ export const api = {
   updateSettings: (data: any) => api.request('/settings', { method: 'PUT', body: JSON.stringify(data) }),
   getAuditLogs: () => api.request('/audit-logs'),
   createBackup: () => api.request('/system/backup', { method: 'POST' }),
+  broadcast: (data: { message: string; target: 'all' | 'groups' | 'dms' }) =>
+    api.request('/broadcast', { method: 'POST', body: JSON.stringify(data) }),
+  async downloadBackup() {
+    const token = this.getToken();
+    const res = await fetch(`${API_BASE}/system/backup/download`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (res.status === 401) {
+      this.clearToken();
+      window.location.reload();
+      throw new Error('Unauthorized');
+    }
+    if (!res.ok) {
+      throw new Error('Failed to download backup');
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `jplbot_backup_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
 };

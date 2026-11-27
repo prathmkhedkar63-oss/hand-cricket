@@ -7,7 +7,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import time
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -27,6 +27,10 @@ app = FastAPI(
     version="1.0.0",
     description="Production-grade REST API powering the Hand Cricket Bot & Tournament Management System"
 )
+app.state.bot = None
+app.state.dp = None
+app.state.webhook_enabled = False
+app.state.webhook_secret = None
 
 # CORS Middleware
 app.add_middleware(
@@ -59,11 +63,32 @@ app.include_router(matches_router)
 app.include_router(hosts_router)
 app.include_router(settings_router)
 
+@app.post(settings.WEBHOOK_PATH, tags=["Telegram"])
+async def telegram_webhook(request: Request):
+    """Receives Telegram webhook updates cleanly on Render without polling 409 conflicts."""
+    expected_secret = getattr(request.app.state, "webhook_secret", None)
+    if expected_secret:
+        got_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if got_secret != expected_secret:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid webhook secret")
+
+    bot = getattr(request.app.state, "bot", None)
+    dp = getattr(request.app.state, "dp", None)
+    if bot is None or dp is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Bot dispatcher not ready")
+
+    from aiogram.types import Update
+    payload = await request.json()
+    update = Update.model_validate(payload, context={"bot": bot})
+    await dp.feed_update(bot, update)
+    return {"ok": True}
+
 @app.get("/health", tags=["Health"])
 async def health_check():
     return {
         "status": "healthy",
         "storage": "postgresql" if db.using_external_db else "json",
+        "bot_mode": "webhook" if getattr(app.state, "webhook_enabled", False) else "polling",
         "timestamp": time.time()
     }
 

@@ -1,3 +1,4 @@
+import asyncio
 import time
 import uuid
 import random
@@ -696,7 +697,8 @@ async def cmd_live_score(message: Message, bot: Bot):
     if inn_obj:
         try:
             from game_engine.scoreboard_image import ScoreboardImageGenerator
-            img_bytes = ScoreboardImageGenerator.render_over_card(
+            img_bytes = await asyncio.to_thread(
+                ScoreboardImageGenerator.render_over_card,
                 target_match,
                 inn_obj,
                 title_override=f"LIVE SCORECARD • INN {inn_obj.innings_num}"
@@ -734,43 +736,75 @@ async def on_rulebook_page(callback: CallbackQuery):
     await _show_or_edit(callback, text, reply_markup=get_rulebook_keyboard(page))
     await callback.answer()
 
+async def _resolve_stats_target_user_id(message: Message) -> int:
+    """Resolves /profile or /stats target from replied user, @username/ID arg, or sender."""
+    reply_user = getattr(getattr(message, "reply_to_message", None), "from_user", None)
+    if reply_user and getattr(reply_user, "id", None):
+        return reply_user.id
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) > 1:
+        query = parts[1].strip().lstrip("@").lower()
+        if query.isdigit():
+            return int(query)
+        if query:
+            users = await db.load("users")
+            for uid_str, u in users.items():
+                uname = (u.get("username") or "").lstrip("@").lower()
+                dname = (u.get("display_name") or "").lower()
+                if uname == query or dname == query:
+                    return int(u.get("user_id", uid_str))
+    return message.from_user.id
+
 async def _build_profile_text(user_id: int) -> str:
     user = await db.get("users", str(user_id))
     if not user:
-        return "ℹ️ Please type /start to register first."
-    stats = await db.get("statistics", str(user_id), {})
+        return "ℹ️ Player is not registered yet (ask them to type /start)."
+    stats = StatsService._ensure_stats_fields(await db.get("statistics", str(user_id), {}))
     reg_date = datetime.fromtimestamp(user.get("registered_at", time.time())).strftime("%Y-%m-%d")
-    username = (user.get("username") or user.get("display_name") or f"Player {user_id}").lstrip("@")
+    display_name = (user.get("username") or user.get("display_name") or f"Player {user_id}").lstrip("@")
+    tag = format_user_tag(user_id, display_name)
+    badge_keys = stats.get("badges", [])
+    badge_line = " • ".join(StatsService.BADGE_LABELS.get(b, b) for b in badge_keys) or "None yet"
     return (
         f"👤 <b>PLAYER PROFILE</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🏏 Player: <b>{username}</b>\n"
+        f"🏏 Player: {tag}\n"
         f"📅 Joined: {reg_date}\n"
         f"⚔️ Matches: <b>{stats.get('matches_played', 0)}</b> "
         f"(W: {stats.get('matches_won', 0)} | L: {stats.get('matches_lost', 0)})\n"
-        f"🏏 Total Runs: <b>{stats.get('total_runs', 0)}</b>\n"
-        f"🎯 Win Rate: <b>{stats.get('win_percentage', 0.0)}%</b>\n"
-        f"⚡ Streak: <b>{stats.get('current_streak', 0)}</b> wins\n"
-        f"🏆 Trophies: <b>{stats.get('tournament_victories', 0)}</b>"
+        f"🏏 Batting: <b>{stats.get('total_runs', 0)}</b> runs • SR <b>{stats.get('strike_rate', 0.0)}</b>\n"
+        f"🎯 Bowling: <b>{stats.get('wickets_taken', 0)}</b> wkts • Econ <b>{stats.get('economy_rate', 0.0)}</b>\n"
+        f"🏅 MOTM: <b>{stats.get('motm_awards', 0)}</b> | 🏆 Trophies: <b>{stats.get('tournament_victories', 0)}</b>\n"
+        f"⚡ Streak: <b>{stats.get('current_streak', 0)}</b> | 🎯 Win Rate: <b>{stats.get('win_percentage', 0.0)}%</b>\n\n"
+        f"🎖️ <b>Badges:</b> {badge_line}"
     )
 
 async def _build_stats_text(user_id: int) -> str:
-    stats = await db.get("statistics", str(user_id))
-    if not stats:
-        return "ℹ️ No statistics yet. Play your first match to generate stats!"
-    username = (stats.get("username") or f"Player {user_id}").lstrip("@")
+    raw = await db.get("statistics", str(user_id))
+    if not raw:
+        return "ℹ️ No statistics yet. Play a match to generate stats!"
+    stats = StatsService._ensure_stats_fields(dict(raw))
+    display_name = (stats.get("username") or f"Player {user_id}").lstrip("@")
+    tag = format_user_tag(user_id, display_name)
+    balls_bowled = stats.get("balls_bowled", 0)
+    overs_bowled = f"{balls_bowled // 6}.{balls_bowled % 6}"
+    badge_keys = stats.get("badges", [])
+    badge_line = ", ".join(StatsService.BADGE_LABELS.get(b, b) for b in badge_keys) or "None yet"
     return (
-        f"📊 <b>CAREER STATISTICS</b>\n"
+        f"📊 <b>ALL-ROUNDER CAREER STATS</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🏏 Player: <b>{username}</b>\n\n"
-        f"⚔️ Matches: <b>{stats.get('matches_played', 0)}</b> "
-        f"(✅ {stats.get('matches_won', 0)} | ❌ {stats.get('matches_lost', 0)} | 🤝 {stats.get('matches_drawn', 0)})\n"
-        f"🏏 Total Runs: <b>{stats.get('total_runs', 0)}</b>\n"
-        f"🌟 Highest Score: <b>{stats.get('highest_score', 0)}</b>\n"
-        f"📈 Batting Avg: <b>{stats.get('batting_average', 0.0)}</b>\n"
-        f"🎯 Win Rate: <b>{stats.get('win_percentage', 0.0)}%</b>\n"
-        f"🔥 Best Streak: <b>{stats.get('highest_streak', 0)}</b>\n"
-        f"🏆 Tournaments Won: <b>{stats.get('tournament_victories', 0)}</b>"
+        f"🏏 Player: {tag}\n\n"
+        f"⚔️ <b>Record:</b> {stats['matches_played']} Matches "
+        f"(✅ {stats['matches_won']} | ❌ {stats['matches_lost']} | 🤝 {stats['matches_drawn']} • Win {stats['win_percentage']}%)\n"
+        f"🏏 <b>Batting:</b> {stats['total_runs']} Runs ({stats['balls_faced']}b) | HS <b>{stats['highest_score']}</b> | "
+        f"Avg <b>{stats['batting_average']}</b> | SR <b>{stats['strike_rate']}</b>\n"
+        f"💥 <b>Boundaries & Milestones:</b> 4s: <b>{stats['fours']}</b> | 6s: <b>{stats['sixes']}</b> | "
+        f"50s: <b>{stats['fifties']}</b> | 100s: <b>{stats['hundreds']}</b>\n"
+        f"🎯 <b>Bowling:</b> <b>{stats['wickets_taken']}</b> Wkts in {overs_bowled} Ov "
+        f"({stats['runs_conceded']} Runs | Econ <b>{stats['economy_rate']}</b>)\n"
+        f"🌟 <b>Awards:</b> MOTM <b>{stats['motm_awards']}</b> | Best Streak <b>{stats['highest_streak']}</b> | "
+        f"🏆 Cups <b>{stats['tournament_victories']}</b>\n"
+        f"🎖️ <b>Badges:</b> {badge_line}"
     )
 
 async def _build_history_text(user_id: int) -> str:
@@ -792,12 +826,14 @@ async def _build_history_text(user_id: int) -> str:
 
 @router.message(Command("profile"))
 async def cmd_profile(message: Message):
-    text = await _build_profile_text(message.from_user.id)
+    target_id = await _resolve_stats_target_user_id(message)
+    text = await _build_profile_text(target_id)
     await message.answer(text, reply_markup=get_profile_keyboard(), parse_mode="HTML")
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message):
-    text = await _build_stats_text(message.from_user.id)
+    target_id = await _resolve_stats_target_user_id(message)
+    text = await _build_stats_text(target_id)
     await message.answer(text, reply_markup=get_profile_keyboard(), parse_mode="HTML")
 
 @router.message(Command("history"))
@@ -816,8 +852,8 @@ async def cmd_leaderboard(message: Message):
         text += "No match records yet. Be the first to win!"
     else:
         for idx, p in enumerate(wins_list, 1):
-            uname = p["username"].lstrip("@")
-            text += f"{idx}. <b>{uname}</b> – {p['matches_won']} Wins ({p['total_runs']} Runs)\n"
+            tag = format_user_tag(p["user_id"], p["username"])
+            text += f"{idx}. {tag} – {p['matches_won']} Wins ({p['total_runs']} Runs)\n"
 
     await message.answer(text, reply_markup=get_leaderboard_keyboard(), parse_mode="HTML")
 
@@ -830,23 +866,35 @@ async def on_leaderboard_category(callback: CallbackQuery):
     if cat == "wins":
         title = "🏆 LEADERBOARD • MOST WINS"
         items = lb.get("global_wins", [])[:10]
-        line_fn = lambda p, i: f"{i}. <b>{p['username'].lstrip('@')}</b> – {p['matches_won']} Wins\n"
+        line_fn = lambda p, i: f"{i}. {format_user_tag(p['user_id'], p['username'])} – {p['matches_won']} Wins\n"
     elif cat == "runs":
         title = "🏏 LEADERBOARD • TOTAL RUNS"
         items = lb.get("highest_runs", [])[:10]
-        line_fn = lambda p, i: f"{i}. <b>{p['username'].lstrip('@')}</b> – {p['total_runs']} Runs\n"
+        line_fn = lambda p, i: f"{i}. {format_user_tag(p['user_id'], p['username'])} – {p['total_runs']} Runs (SR {p.get('strike_rate', 0.0)})\n"
     elif cat == "high":
         title = "🌟 LEADERBOARD • HIGHEST SCORE"
         items = lb.get("highest_score", [])[:10]
-        line_fn = lambda p, i: f"{i}. <b>{p['username'].lstrip('@')}</b> – {p['highest_score']} Runs\n"
+        line_fn = lambda p, i: f"{i}. {format_user_tag(p['user_id'], p['username'])} – {p['highest_score']} Runs\n"
+    elif cat == "wickets":
+        title = "🎯 LEADERBOARD • MOST WICKETS"
+        items = lb.get("most_wickets", [])[:10]
+        line_fn = lambda p, i: f"{i}. {format_user_tag(p['user_id'], p['username'])} – {p.get('wickets_taken', 0)} Wkts (Econ {p.get('economy_rate', 0.0)})\n"
+    elif cat == "sixes":
+        title = "💥 LEADERBOARD • MOST SIXES"
+        items = lb.get("most_sixes", [])[:10]
+        line_fn = lambda p, i: f"{i}. {format_user_tag(p['user_id'], p['username'])} – {p.get('sixes', 0)} Sixes\n"
+    elif cat == "motm":
+        title = "🏅 LEADERBOARD • MOST MOTM AWARDS"
+        items = lb.get("motm", [])[:10]
+        line_fn = lambda p, i: f"{i}. {format_user_tag(p['user_id'], p['username'])} – {p.get('motm_awards', 0)} MOTMs\n"
     elif cat == "winpct":
         title = "🎯 LEADERBOARD • WIN % (Min 3)"
         items = lb.get("best_win_percentage", [])[:10]
-        line_fn = lambda p, i: f"{i}. <b>{p['username'].lstrip('@')}</b> – {p['win_percentage']}% ({p['matches_won']}/{p['matches_played']})\n"
+        line_fn = lambda p, i: f"{i}. {format_user_tag(p['user_id'], p['username'])} – {p['win_percentage']}% ({p['matches_won']}/{p['matches_played']})\n"
     elif cat == "streak":
         title = "🔥 LEADERBOARD • WIN STREAK"
         items = lb.get("longest_streak", [])[:10]
-        line_fn = lambda p, i: f"{i}. <b>{p['username'].lstrip('@')}</b> – {p['longest_streak']} Streak\n"
+        line_fn = lambda p, i: f"{i}. {format_user_tag(p['user_id'], p['username'])} – {p['longest_streak']} Streak\n"
     else:
         await callback.answer("Invalid category.")
         return
@@ -1041,11 +1089,47 @@ async def on_tournament_register(callback: CallbackQuery, bot: Bot):
     success, msg = await TournamentService.register_player(tid, user.id, display_name)
     await callback.answer(msg, show_alert=True)
 
+    if success:
+        t = await db.get("tournaments", tid)
+        if t and t.get("mode") == "solo":
+            await SoloTournamentService.refresh_countdown_message(tid, bot)
+        target_chat_id = (t.get("group_chat_id") if t else None) or getattr(getattr(callback, "message", None), "chat", None)
+        if hasattr(target_chat_id, "id"):
+            target_chat_id = target_chat_id.id
+        if target_chat_id and t:
+            try:
+                await bot.send_message(
+                    chat_id=target_chat_id,
+                    text=f"✅ {format_user_tag(user.id, display_name)} joined <b>{t['name']}</b>!",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
 @router.callback_query(F.data.startswith("twid:"))
-async def on_tournament_withdraw(callback: CallbackQuery):
+async def on_tournament_withdraw(callback: CallbackQuery, bot: Bot):
     tid = callback.data.split(":")[1]
-    success, msg = await TournamentService.withdraw_player(tid, callback.from_user.id)
+    user = callback.from_user
+    success, msg = await TournamentService.withdraw_player(tid, user.id)
     await callback.answer(msg, show_alert=True)
+
+    if success:
+        t = await db.get("tournaments", tid)
+        if t and t.get("mode") == "solo":
+            await SoloTournamentService.refresh_countdown_message(tid, bot)
+        display_name = resolve_player_name(user)
+        target_chat_id = (t.get("group_chat_id") if t else None) or getattr(getattr(callback, "message", None), "chat", None)
+        if hasattr(target_chat_id, "id"):
+            target_chat_id = target_chat_id.id
+        if target_chat_id and t:
+            try:
+                await bot.send_message(
+                    chat_id=target_chat_id,
+                    text=f"🚪 {format_user_tag(user.id, display_name)} left <b>{t['name']}</b>.",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
 
 @router.callback_query(F.data.startswith("tpart:"))
 async def on_tournament_view_participants(callback: CallbackQuery):
@@ -1055,7 +1139,7 @@ async def on_tournament_view_participants(callback: CallbackQuery):
         await callback.answer("No registered participants yet.", show_alert=True)
         return
 
-    names = "\n".join([f"{idx}. <b>{p['username'].lstrip('@')}</b>" for idx, p in enumerate(parts, 1)])
+    names = "\n".join([f"{idx}. {format_user_tag(p['user_id'], p['username'])}" for idx, p in enumerate(parts, 1)])
     await callback.message.reply(f"👥 <b>JOINED PLAYERS ({len(parts)}):</b>\n\n{names}", parse_mode="HTML")
     await callback.answer()
 

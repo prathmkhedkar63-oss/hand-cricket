@@ -184,6 +184,7 @@ class CricketFunService:
                 err = str(e).lower()
                 if "forbidden" in err or "chat not found" in err or "kicked" in err:
                     dead_groups.add(gid)
+            await asyncio.sleep(0.05)
 
         if dead_groups and isinstance(sys_settings.get("known_groups"), list):
             sys_settings["known_groups"] = [g for g in sys_settings["known_groups"] if g not in dead_groups]

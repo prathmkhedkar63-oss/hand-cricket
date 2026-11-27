@@ -286,3 +286,48 @@ def test_solo_rotation_out_over_and_midover_bowler_takeover():
     img_match = ScoreboardImageGenerator.render_match_card(m2)
     assert img_over.startswith(b"\xff\xd8\xff")
     assert img_match.startswith(b"\xff\xd8\xff")
+
+
+@pytest.mark.asyncio
+async def test_single_message_live_roster_clickable_profiles_and_join_notice():
+    import uuid
+    from unittest.mock import AsyncMock, MagicMock
+    from bot.services.solo_tournament_service import SoloTournamentService
+    from bot.handlers.player_handlers import on_tournament_register
+    from bot.handlers.host_handlers import format_teams_roster_card
+
+    mock_bot = AsyncMock()
+    mock_bot.send_photo.return_value = MagicMock(message_id=7771, photo=None)
+    mock_bot.send_message.return_value = MagicMock(message_id=7772)
+
+    t_id = f"t_live_{uuid.uuid4().hex[:6]}"
+    await TournamentService.create_tournament(t_id, "Solo Cup #a92c", "Test", "solo", -100777111, 101)
+    await SoloTournamentService.start_countdown(t_id, mock_bot, -100777111)
+
+    # Second player clicks Register -> same countdown message updated with clickable tg://user link + join notice
+    cb = MagicMock()
+    cb.data = f"treg:{t_id}"
+    cb.from_user = MagicMock(id=202, username=None, full_name="PRathames", first_name="PRathames", last_name=None)
+    cb.message = MagicMock(chat=MagicMock(id=-100777111))
+    cb.answer = AsyncMock()
+    await on_tournament_register(cb, mock_bot)
+
+    # Verify same countdown_message_id (7771) edited in place with clickable profile link
+    assert mock_bot.edit_message_caption.await_count >= 1
+    cap_arg = mock_bot.edit_message_caption.call_args.kwargs["caption"]
+    assert 'href="tg://user?id=202"' in cap_arg and "PRathames" in cap_arg
+
+    # Verify specific player joined message sent
+    sent_texts = [c.kwargs.get("text", "") for c in mock_bot.send_message.await_args_list]
+    assert any('href="tg://user?id=202"' in txt and "joined" in txt for txt in sent_texts)
+
+    # Verify host tournament roster card also uses clickable profile links
+    card = format_teams_roster_card(
+        {"name": "Team Cup", "max_balls": 36, "host_id": 101, "host_username": "HostOne"},
+        {"Team A": [{"user_id": 202, "username": "PRathames"}], "Team B": [], "captains": {}}
+    )
+    assert 'href="tg://user?id=101"' in card and 'href="tg://user?id=202"' in card
+
+    task = SoloTournamentService._running_countdowns.pop(t_id, None)
+    if task and not task.done():
+        task.cancel()
