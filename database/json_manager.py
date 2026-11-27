@@ -90,9 +90,20 @@ class JSONDatabaseManager:
 
     @staticmethod
     def _normalize_pg_url(url: str) -> str:
-        clean = url.strip()
+        from urllib.parse import quote, unquote
+        clean = url.strip().strip('"').strip("'")
         if clean.startswith("postgres://"):
             clean = "postgresql://" + clean[len("postgres://"):]
+        if "://" in clean:
+            scheme, rest = clean.split("://", 1)
+            if "@" in rest:
+                userinfo, host_part = rest.rsplit("@", 1)
+                if ":" in userinfo:
+                    user, raw_pw = userinfo.split(":", 1)
+                    if raw_pw.startswith("[") and raw_pw.endswith("]") and raw_pw != "[YOUR-PASSWORD]":
+                        raw_pw = raw_pw[1:-1]
+                    encoded_pw = quote(unquote(raw_pw), safe="")
+                    clean = f"{scheme}://{user}:{encoded_pw}@{host_part}"
         return clean
 
     async def _get_pg_pool(self):
@@ -107,15 +118,20 @@ class JSONDatabaseManager:
         async with self._pg_init_lock:
             if self._pg_pool is not None:
                 return self._pg_pool
+            safe_host = "unknown"
             try:
                 import asyncpg
                 dsn = self._normalize_pg_url(self.database_url)
+                if "@" in dsn:
+                    safe_host = dsn.rsplit("@", 1)[1].split("/", 1)[0].split("?", 1)[0]
+                if "[YOUR-PASSWORD]" in dsn:
+                    raise ValueError("DATABASE_URL still contains the placeholder [YOUR-PASSWORD]")
                 connect_kwargs: Dict[str, Any] = {
                     "min_size": 1,
                     "max_size": 5,
                     "statement_cache_size": 0,  # Compatible with Supabase/PgBouncer transaction poolers
                 }
-                if "localhost" not in dsn and "127.0.0.1" not in dsn and "sslmode=" not in dsn:
+                if "localhost" not in safe_host and "127.0.0.1" not in safe_host and "sslmode=" not in dsn:
                     connect_kwargs["ssl"] = "require"
                 pool = await asyncpg.create_pool(dsn, **connect_kwargs)
                 async with pool.acquire() as conn:
@@ -129,10 +145,16 @@ class JSONDatabaseManager:
                         """
                     )
                 self._pg_pool = pool
-                logger.info("Connected to external PostgreSQL database (bot_tables ready).")
+                logger.info(f"Connected to external PostgreSQL database ({safe_host}, bot_tables ready).")
                 return self._pg_pool
             except Exception as e:
-                logger.error(f"External PostgreSQL connection failed, falling back to local JSON: {e}")
+                if safe_host.startswith("db.") and ".supabase.co" in safe_host:
+                    logger.error(
+                        f"External PostgreSQL DNS/network error for '{safe_host}': {e}. "
+                        f"Supabase Direct (db.*.supabase.co) is IPv6-only; use Session/Transaction Pooler (*.pooler.supabase.com) in Render DATABASE_URL."
+                    )
+                else:
+                    logger.error(f"External PostgreSQL connection failed for '{safe_host}', falling back to local JSON: {e}")
                 self._pg_failed = True
                 return None
 

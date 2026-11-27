@@ -7,3 +7,4 @@ admin_panel/node_modules/
 admin_panel/dist/
 data/*.json
 data/backups/
+*.exe

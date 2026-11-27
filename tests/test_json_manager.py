@@ -70,6 +70,10 @@ async def test_external_postgres_adapter(tmp_path):
     fake_pool.acquire.return_value = FakeAcquire(fake_conn)
     fake_pool.close = AsyncMock()
 
+    # Verify password with @ and # and stray brackets is URL-encoded safely
+    norm = JSONDatabaseManager._normalize_pg_url("postgres://u:[P@ss#1]@aws-0-sg.pooler.supabase.com:6543/postgres")
+    assert norm == "postgresql://u:P%40ss%231@aws-0-sg.pooler.supabase.com:6543/postgres"
+
     with patch("asyncpg.create_pool", new=AsyncMock(return_value=fake_pool)) as mock_pool:
         mgr = JSONDatabaseManager(
             data_dir=tmp_path / "d",
